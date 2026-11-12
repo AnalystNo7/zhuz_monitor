@@ -10,7 +10,8 @@ export async function loadFolder(folder: SourceFolder, cfg: Config = DEFAULT_CON
   const failed: { path: string; message: string }[] = [];
   for (const file of folder.files) {
     try {
-      workbooks.push({ path: file.path, sheets: readWorkbook(await file.read()) });
+      const { data, modified } = await file.read();
+      workbooks.push({ path: file.path, sheets: readWorkbook(data), modified });
     } catch (error) {
       failed.push({ path: file.path, message: error instanceof Error ? error.message : String(error) });
     }

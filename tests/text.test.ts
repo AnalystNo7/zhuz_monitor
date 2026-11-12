@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fileKey, norm, parseDate, parsePeriod } from '../src/core/text.ts';
+import { bucketOf, dateFromTimestamp, fileKey, formatDate, norm, parseDate, parseReportingDate } from '../src/core/text.ts';
 
 describe('даты', () => {
   it('порядковый номер дня Excel', () => {
@@ -19,32 +19,45 @@ describe('даты', () => {
   });
 });
 
-describe('отчётный период', () => {
+describe('дата перечня документов', () => {
   it.each([
-    ['3 квартал 2026', '2026-Q3'],
-    ['3-й квартал 2026 г.', '2026-Q3'],
-    ['III кв. 2026', '2026-Q3'],
-    ['IV квартал 2025', '2025-Q4'],
-    ['2026, квартал 2', '2026-Q2'],
-    ['Q1 2026', '2026-Q1'],
-    ['2026 Q4', '2026-Q4'],
-    ['сентябрь 2026', '2026-Q3'],
-    ['май 2026', '2026-Q2'],
-    ['март 2026', '2026-Q1'],
-    ['09.2026', '2026-Q3'],
-    ['05.10.2026', '2026-Q4'],
-  ])('%s → %s', (text, key) => {
-    expect(parsePeriod(text)?.key).toBe(key);
+    ['05.10.2026', '2026-10-05'],
+    ['на 05.10.2026', '2026-10-05'],
+    ['2026-10-05', '2026-10-05'],
+    ['сентябрь 2026', '2026-09-30'],
+    ['за февраль 2028 г.', '2028-02-29'],
+    ['май 2026', '2026-05-31'],
+    ['март 2026', '2026-03-31'],
+    ['09.2026', '2026-09-30'],
+    ['3 квартал 2026', '2026-09-30'],
+    ['3-й квартал 2026 г.', '2026-09-30'],
+    ['III кв. 2026', '2026-09-30'],
+    ['IV квартал 2025', '2025-12-31'],
+    ['2026, квартал 2', '2026-06-30'],
+    ['Q1 2026', '2026-03-31'],
+    ['2026 Q4', '2026-12-31'],
+  ])('%s → %s', (text, expected) => {
+    expect(parseReportingDate(text)).toBe(expected);
   });
   it('дата в ячейке Excel', () => {
-    expect(parsePeriod(46273)?.key).toBe('2026-Q3');
+    expect(parseReportingDate(46273)).toBe('2026-09-08');
   });
-  it('без года период не определяется', () => {
-    expect(parsePeriod('3 квартал')).toBeNull();
-    expect(parsePeriod('')).toBeNull();
+  it('без года дата не определяется', () => {
+    expect(parseReportingDate('3 квартал')).toBeNull();
+    expect(parseReportingDate('')).toBeNull();
   });
-  it('подпись периода', () => {
-    expect(parsePeriod('3 квартал 2026')?.label).toBe('3 кв. 2026');
+});
+
+describe('периоды', () => {
+  it('квартал и месяц по дате', () => {
+    expect(bucketOf('2026-09-08', 'quarter')).toEqual({ key: '2026-Q3', label: '3 кв. 2026' });
+    expect(bucketOf('2026-09-08', 'month')).toEqual({ key: '2026-09', label: 'сентябрь 2026' });
+    expect(bucketOf('2026-12-31', 'quarter').key).toBe('2026-Q4');
+    expect(bucketOf('2026-01-01', 'quarter').key).toBe('2026-Q1');
+  });
+  it('оформление даты и дата из отметки времени файла', () => {
+    expect(formatDate('2026-09-08')).toBe('08.09.2026');
+    expect(dateFromTimestamp(new Date(2026, 8, 8, 23, 30).getTime())).toBe('2026-09-08');
   });
 });
 

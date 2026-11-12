@@ -1,47 +1,67 @@
 import { describe, expect, it } from 'vitest';
 import { parseRegistry } from '../src/core/registry.ts';
+import type { Registry, SheetData } from '../src/core/types.ts';
 import { REGISTRY_HEADER, journalSheet, registrySheet } from './helpers.ts';
 
+function registry(sheet: SheetData): Registry {
+  const parsed = parseRegistry(sheet, 'Шаблон_1.xlsx');
+  if (parsed.kind !== 'registry') throw new Error('ожидался перечень документов');
+  return parsed.registry;
+}
+
 describe('разбор перечня документов (расширенный Шаблон_1)', () => {
-  it('читает строки, период и новые колонки', () => {
-    const parsed = parseRegistry(
+  it('читает строки, дату перечня и новые колонки', () => {
+    const result = registry(
       registrySheet([
         { document: 'Техническое задание', cycles: 2, pages: 35, journalFile: 'ЖУЗ_ТЗ.xlsx' },
         { document: 'Руководство пользователя', cycles: '1', journalFile: 'Без замечаний' },
       ]),
-      'Шаблон_1.xlsx',
     );
-    if (parsed.kind !== 'registry') throw new Error('ожидался перечень документов');
-    const { registry } = parsed;
-    expect(registry.period?.key).toBe('2026-Q3');
-    expect(registry.rows).toHaveLength(2);
-    expect(registry.rows[0]).toMatchObject({
-      row: 4, project: 'Проект Альфа', manager: 'Петров П.', document: 'Техническое задание',
-      internal: false, external: true, cycles: 2, pages: 35, journalFile: 'ЖУЗ_ТЗ.xlsx',
+    expect(result.asOf).toBe('2026-09-30');
+    expect(result.rows).toHaveLength(2);
+    expect(result.rows[0]).toMatchObject({
+      row: 4, project: 'Проект Альфа', manager: 'Петров П.', document: 'Техническое задание', status: 'Согласован',
+      internal: false, external: true, expertise: 'external', cycles: 2, pages: 35, journalFile: 'ЖУЗ_ТЗ.xlsx',
     });
-    expect(registry.rows[1]).toMatchObject({ cycles: 1, pages: null });
-    expect(registry.issues).toEqual([]);
+    expect(result.rows[1]).toMatchObject({ cycles: 1, pages: null });
+    expect(result.issues).toEqual([]);
   });
 
-  it('берёт период из соседней ячейки', () => {
+  it.each([
+    ['Отчетный период: сентябрь 2026', '2026-09-30'],
+    ['Отчётный период 05.10.2026', '2026-10-05'],
+    ['Данные на 05.10.2026', '2026-10-05'],
+    ['Отчетный период:', null],
+  ])('дата из подписи «%s»', (label, expected) => {
+    expect(registry(registrySheet([{ document: 'ТЗ', journalFile: 'ЖУЗ.xlsx' }], label)).asOf).toBe(expected);
+  });
+
+  it('берёт дату из соседней ячейки', () => {
     const sheet = registrySheet([{ document: 'ТЗ', journalFile: 'ЖУЗ.xlsx' }]);
     sheet.rows[0] = ['Отчетный период:', null, 'IV кв. 2026'];
-    const parsed = parseRegistry(sheet, 'Шаблон_1.xlsx');
-    expect(parsed.kind === 'registry' && parsed.registry.period?.key).toBe('2026-Q4');
+    expect(registry(sheet).asOf).toBe('2026-12-31');
+    sheet.rows[0] = ['Отчетный период:', 46273];
+    expect(registry(sheet).asOf).toBe('2026-09-08');
   });
 
-  it('предупреждает, если период не указан', () => {
-    const parsed = parseRegistry(registrySheet([{ document: 'ТЗ', journalFile: 'ЖУЗ.xlsx' }], 'Отчетный период:'), 'Шаблон_1.xlsx');
-    if (parsed.kind !== 'registry') throw new Error('ожидался перечень документов');
-    expect(parsed.registry.period).toBeNull();
-    expect(parsed.registry.issues).toHaveLength(1);
+  it('определяет вид экспертизы по отметкам согласования', () => {
+    const result = registry(
+      registrySheet([
+        { document: 'А', internal: 'да', external: 'нет', journalFile: 'а' },
+        { document: 'Б', internal: 'Нет', external: 'Да', journalFile: 'б' },
+        { document: 'В', internal: null, external: null, journalFile: 'в' },
+        { document: 'Г', internal: 'да', external: 'да', journalFile: 'г' },
+      ]),
+    );
+    expect(result.rows.map((r) => r.expertise)).toEqual(['internal', 'external', null, null]);
+    // Обе отметки сразу — ошибка заполнения: на каждую экспертизу нужна своя строка.
+    expect(result.issues).toEqual([expect.objectContaining({ level: 'warning', row: 7 })]);
   });
 
   it('предупреждает о нечисловом количестве циклов', () => {
-    const parsed = parseRegistry(registrySheet([{ document: 'ТЗ', cycles: 'два', journalFile: 'ЖУЗ.xlsx' }]), 'Шаблон_1.xlsx');
-    if (parsed.kind !== 'registry') throw new Error('ожидался перечень документов');
-    expect(parsed.registry.rows[0]!.cycles).toBeNull();
-    expect(parsed.registry.issues[0]).toMatchObject({ level: 'warning', row: 4 });
+    const result = registry(registrySheet([{ document: 'ТЗ', cycles: 'два', journalFile: 'ЖУЗ.xlsx' }]));
+    expect(result.rows[0]!.cycles).toBeNull();
+    expect(result.issues[0]).toMatchObject({ level: 'warning', row: 4 });
   });
 
   it('исходный Шаблон_1 без колонки «Файл ЖУЗ» распознаётся как неполный', () => {

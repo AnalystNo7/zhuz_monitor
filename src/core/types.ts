@@ -14,13 +14,17 @@ export type RemarkIndicator = Exclude<IndicatorId, 'cycles'>;
 export type Zone = 'green' | 'yellow' | 'red';
 export type RemarkStatus = 'accepted' | 'rejected' | 'unknown' | 'empty';
 
+export type Granularity = 'month' | 'quarter';
+
+/** Отчётный период выбранной детализации: месяц или квартал. */
 export interface Period {
-  /** Ключ для сортировки и группировки, например `2026-Q3`. */
+  /** Ключ для сортировки и группировки: `2026-Q3` или `2026-09`. */
   key: string;
   label: string;
-  year: number;
-  quarter: number;
 }
+
+/** Вид экспертизы, по итогам которой заведён журнал. */
+export type Expertise = 'internal' | 'external';
 
 export interface Issue {
   level: 'error' | 'warning' | 'info';
@@ -74,6 +78,8 @@ export interface RegistryRow {
   folderLink: string;
   internal: boolean | null;
   external: boolean | null;
+  /** Вид экспертизы строки; `null`, если не отмечен или отмечены оба. */
+  expertise: Expertise | null;
   cycles: number | null;
   pages: number | null;
   /** Имя файла ЖУЗ либо отметка «без замечаний». */
@@ -83,7 +89,8 @@ export interface RegistryRow {
 export interface Registry {
   path: string;
   sheet: string;
-  period: Period | null;
+  /** Дата, на которую составлен перечень (конец отчётного периода), `ГГГГ-ММ-ДД`. */
+  asOf: string | null;
   rows: RegistryRow[];
   issues: Issue[];
 }
@@ -104,18 +111,23 @@ export interface DocScore {
 }
 
 /** Чего не хватило для полной оценки документа. */
-export type MissingPart = 'registry' | 'journal' | 'cycles' | 'period';
+export type MissingPart = 'registry' | 'journal' | 'cycles' | 'date';
 
 export interface DocumentEval {
   id: string;
-  period: Period | null;
+  /**
+   * Ключ документа, общий для всех его версий: проект, наименование и вид экспертизы.
+   * По нему версии, загруженные в разное время, собираются в историю.
+   */
+  docKey: string;
+  /** Дата версии, `ГГГГ-ММ-ДД`; `null`, если определить не удалось. */
+  asOf: string | null;
   project: string;
   manager: string;
   developer: string;
   document: string;
   status: string;
-  internal: boolean | null;
-  external: boolean | null;
+  expertise: Expertise | null;
   pages: number | null;
   registryPath: string | null;
   journalPath: string | null;

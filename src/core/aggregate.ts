@@ -1,6 +1,7 @@
 import { INDICATOR_IDS } from './config.ts';
 import { round2 } from './score.ts';
-import type { DocumentEval, IndicatorId, Period, Zone } from './types.ts';
+import { bucketOf } from './text.ts';
+import type { DocumentEval, Granularity, IndicatorId, Period, Zone } from './types.ts';
 
 export interface Summary {
   /** Всего документов в выборке. */
@@ -62,6 +63,12 @@ function indicatorSummary(documents: DocumentEval[], id: IndicatorId): Indicator
   return { average: mean(scores), failed };
 }
 
+function describe(key: string, label: string, documents: DocumentEval[]): GroupSummary {
+  const indicators = {} as Record<IndicatorId, IndicatorSummary>;
+  for (const id of INDICATOR_IDS) indicators[id] = indicatorSummary(documents, id);
+  return { key, label, ...summarize(documents), indicators };
+}
+
 export function groupBy(
   documents: DocumentEval[],
   keyOf: (doc: DocumentEval) => { key: string; label: string },
@@ -73,11 +80,7 @@ export function groupBy(
     group.docs.push(doc);
     groups.set(key, group);
   }
-  return [...groups].map(([key, { label, docs }]) => {
-    const indicators = {} as Record<IndicatorId, IndicatorSummary>;
-    for (const id of INDICATOR_IDS) indicators[id] = indicatorSummary(docs, id);
-    return { key, label, ...summarize(docs), indicators };
-  });
+  return [...groups].map(([key, { label, docs }]) => describe(key, label, docs));
 }
 
 /** От лучшего среднего к худшему; группы без оценок — в конце. */
@@ -101,16 +104,59 @@ export function byProject(documents: DocumentEval[]): GroupSummary[] {
   }).sort(byAverageDesc);
 }
 
-/** Динамика по отчётным периодам в хронологическом порядке. */
-export function byPeriod(documents: DocumentEval[]): GroupSummary[] {
-  return groupBy(
-    documents.filter((d) => d.period),
-    (d) => ({ key: d.period!.key, label: d.period!.label }),
-  ).sort((a, b) => a.key.localeCompare(b.key));
+/* ---------- Версии документа во времени ---------- */
+
+/** Порядок версий: по дате, версии без даты — самые ранние. */
+function byVersionOrder(a: DocumentEval, b: DocumentEval): number {
+  return (a.asOf ?? '').localeCompare(b.asOf ?? '') || a.id.localeCompare(b.id);
 }
 
-export function listPeriods(documents: DocumentEval[]): Period[] {
+/** История каждого документа: все его версии от ранней к поздней. */
+export function buildHistories(documents: DocumentEval[]): Map<string, DocumentEval[]> {
+  const histories = new Map<string, DocumentEval[]>();
+  for (const doc of documents) histories.set(doc.docKey, [...(histories.get(doc.docKey) ?? []), doc]);
+  for (const versions of histories.values()) versions.sort(byVersionOrder);
+  return histories;
+}
+
+/** Последняя версия каждого документа из набора. */
+export function latestVersions(documents: DocumentEval[]): DocumentEval[] {
+  const latest = new Map<string, DocumentEval>();
+  for (const doc of [...documents].sort(byVersionOrder)) latest.set(doc.docKey, doc);
+  // Порядок вывода — как в исходном наборе.
+  const keep = new Set([...latest.values()].map((d) => d.id));
+  return documents.filter((d) => keep.has(d.id));
+}
+
+/** Версия того же документа, непосредственно предшествующая данной. */
+export function previousVersion(doc: DocumentEval, histories: Map<string, DocumentEval[]>): DocumentEval | null {
+  const versions = histories.get(doc.docKey) ?? [];
+  const index = versions.findIndex((v) => v.id === doc.id);
+  return index > 0 ? versions[index - 1]! : null;
+}
+
+/** Периоды выбранной детализации, в которые попадают версии документов. */
+export function listPeriods(documents: DocumentEval[], granularity: Granularity): Period[] {
   const periods = new Map<string, Period>();
-  for (const doc of documents) if (doc.period) periods.set(doc.period.key, doc.period);
+  for (const doc of documents) {
+    if (!doc.asOf) continue;
+    const period = bucketOf(doc.asOf, granularity);
+    periods.set(period.key, period);
+  }
   return [...periods.values()].sort((a, b) => a.key.localeCompare(b.key));
+}
+
+/**
+ * Состояние на период: по каждому документу — последняя версия, загруженная в этом периоде.
+ * Документы без версий в периоде в него не попадают.
+ */
+export function documentsInPeriod(documents: DocumentEval[], granularity: Granularity, periodKey: string): DocumentEval[] {
+  return latestVersions(documents.filter((d) => d.asOf !== null && bucketOf(d.asOf, granularity).key === periodKey));
+}
+
+/** Динамика по периодам в хронологическом порядке. */
+export function trend(documents: DocumentEval[], granularity: Granularity): GroupSummary[] {
+  return listPeriods(documents, granularity).map((period) =>
+    describe(period.key, period.label, documentsInPeriod(documents, granularity, period.key)),
+  );
 }

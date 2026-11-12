@@ -1,5 +1,5 @@
-import { isBlank, norm, parsePeriod, str } from './text.ts';
-import type { Cell, Issue, Period, Registry, RegistryRow, SheetData } from './types.ts';
+import { isBlank, norm, parseReportingDate, str } from './text.ts';
+import type { Cell, Expertise, Issue, Registry, RegistryRow, SheetData } from './types.ts';
 
 type Column =
   | 'project' | 'manager' | 'developer' | 'document' | 'status' | 'channel' | 'folderLink'
@@ -26,6 +26,8 @@ const COLUMN_MATCHERS: Record<Column, (header: string) => boolean> = {
 
 const REQUIRED: Column[] = ['project', 'manager', 'document'];
 const HEADER_SEARCH_ROWS = 15;
+/** Подписи над таблицей, после которых указана дата или отчётный период. */
+const DATE_LABELS = ['отчетный период', 'данные на', 'дата выгрузки'];
 
 type ColumnMap = Partial<Record<Column, number>>;
 
@@ -58,17 +60,18 @@ function count(v: Cell): number | null {
   return Number(s);
 }
 
-/** Ищет над шапкой строку «Отчетный период: …»; значение — после двоеточия или в соседней ячейке. */
-function findPeriod(rows: Cell[][], headerIndex: number): Period | null {
+/** Ищет над шапкой подпись вида «Отчетный период: …»; значение — после подписи или в соседней ячейке. */
+function findAsOf(rows: Cell[][], headerIndex: number): string | null {
   for (let i = 0; i < headerIndex; i++) {
     const row = rows[i] ?? [];
     for (let j = 0; j < row.length; j++) {
       const text = norm(row[j]);
-      if (!text.startsWith('отчетный период')) continue;
-      const inline = parsePeriod(text.replace(/^отчетный период\s*:?/, ''));
+      const label = DATE_LABELS.find((l) => text.startsWith(l));
+      if (!label) continue;
+      const inline = parseReportingDate(text.slice(label.length));
       if (inline) return inline;
       for (let k = j + 1; k < row.length; k++) {
-        if (!isBlank(row[k])) return parsePeriod(row[k]);
+        if (!isBlank(row[k])) return parseReportingDate(row[k]);
       }
     }
   }
@@ -102,23 +105,40 @@ export function parseRegistry(sheet: SheetData, path: string): RegistryParse {
   };
 
   const issues: Issue[] = [];
-  const period = findPeriod(sheet.rows, headerIndex);
-  if (!period) {
-    issues.push({ level: 'warning', file: path, message: 'Не найден или не распознан отчётный период над таблицей.' });
-  }
+  const asOf = findAsOf(sheet.rows, headerIndex);
 
   const rows: RegistryRow[] = [];
   for (let i = headerIndex + 1; i < sheet.rows.length; i++) {
     const row = sheet.rows[i] ?? [];
     const document = str(cell(row, 'document'));
     if (!document) continue;
+    const rowNumber = i + 1;
+
     const cyclesCell = cell(row, 'cycles');
     const cycles = count(cyclesCell);
     if (cycles === null && !isBlank(cyclesCell)) {
-      issues.push({ level: 'warning', file: path, row: i + 1, message: `Число циклов «${str(cyclesCell)}» не распознано.` });
+      issues.push({ level: 'warning', file: path, row: rowNumber, message: `Число циклов «${str(cyclesCell)}» не распознано.` });
     }
+
+    // Внутренняя и внешняя экспертиза оцениваются отдельно: на каждую — своя строка и свой ЖУЗ.
+    const internal = yesNo(cell(row, 'internal'));
+    const external = yesNo(cell(row, 'external'));
+    let expertise: Expertise | null = null;
+    if (internal && external) {
+      issues.push({
+        level: 'warning',
+        file: path,
+        row: rowNumber,
+        message: `«${document}»: отмечены и внутреннее, и внешнее согласование. На каждую экспертизу нужна отдельная строка со своим ЖУЗ.`,
+      });
+    } else if (internal) {
+      expertise = 'internal';
+    } else if (external) {
+      expertise = 'external';
+    }
+
     rows.push({
-      row: i + 1,
+      row: rowNumber,
       project: str(cell(row, 'project')),
       manager: str(cell(row, 'manager')),
       developer: str(cell(row, 'developer')),
@@ -126,12 +146,13 @@ export function parseRegistry(sheet: SheetData, path: string): RegistryParse {
       status: str(cell(row, 'status')),
       channel: str(cell(row, 'channel')),
       folderLink: str(cell(row, 'folderLink')),
-      internal: yesNo(cell(row, 'internal')),
-      external: yesNo(cell(row, 'external')),
+      internal,
+      external,
+      expertise,
       cycles,
       pages: count(cell(row, 'pages')),
       journalFile: str(cell(row, 'journalFile')),
     });
   }
-  return { kind: 'registry', registry: { path, sheet: sheet.name, period, rows, issues } };
+  return { kind: 'registry', registry: { path, sheet: sheet.name, asOf, rows, issues } };
 }

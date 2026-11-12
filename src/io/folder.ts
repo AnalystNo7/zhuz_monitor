@@ -6,7 +6,8 @@
 export interface SourceFile {
   /** Путь относительно выбранной папки, с разделителем `/`. */
   path: string;
-  read(): Promise<Uint8Array>;
+  /** Содержимое и время последнего изменения файла (мс). */
+  read(): Promise<{ data: Uint8Array; modified: number }>;
 }
 
 export interface SourceFolder {
@@ -44,7 +45,13 @@ async function walk(dir: DirectoryHandle, prefix: string, out: SourceFile[]): Pr
     if (entry.kind === 'directory') {
       await walk(entry, path, out);
     } else if (isWorkbookName(entry.name)) {
-      out.push({ path, read: async () => new Uint8Array(await (await entry.getFile()).arrayBuffer()) });
+      out.push({
+        path,
+        read: async () => {
+          const file = await entry.getFile();
+          return { data: new Uint8Array(await file.arrayBuffer()), modified: file.lastModified };
+        },
+      });
     }
   }
 }
@@ -73,7 +80,7 @@ export function folderFromFileList(list: FileList): SourceFolder {
     if (!isWorkbookName(file.name)) continue;
     files.push({
       path: slash > 0 ? relative.slice(slash + 1) : relative,
-      read: async () => new Uint8Array(await file.arrayBuffer()),
+      read: async () => ({ data: new Uint8Array(await file.arrayBuffer()), modified: file.lastModified }),
     });
   }
   return { name, files };

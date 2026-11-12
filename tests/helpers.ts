@@ -62,6 +62,9 @@ export interface RegistryInput {
   project?: string;
   manager?: string;
   document: string;
+  status?: string;
+  internal?: Cell;
+  external?: Cell;
   cycles?: Cell;
   pages?: Cell;
   journalFile?: Cell;
@@ -69,8 +72,9 @@ export interface RegistryInput {
 
 export function registrySheet(rows: RegistryInput[], period: Cell = 'Отчетный период: 3 квартал 2026'): SheetData {
   const body: Cell[][] = rows.map((r, i) => [
-    i + 1, r.project ?? 'Проект Альфа', r.manager ?? 'Петров П.', 'Аналитик', r.document, 'Согласован',
-    'СЭД', 'S:\\Папка', 'нет', 'да', r.cycles ?? null, r.pages ?? null, r.journalFile ?? null,
+    i + 1, r.project ?? 'Проект Альфа', r.manager ?? 'Петров П.', 'Аналитик', r.document, r.status ?? 'Согласован',
+    'СЭД', 'S:\\Папка', r.internal === undefined ? 'нет' : r.internal, r.external === undefined ? 'да' : r.external,
+    r.cycles ?? null, r.pages ?? null, r.journalFile ?? null,
   ]);
   return { name: 'Лист1', rows: [[period], [], REGISTRY_HEADER, ...body] };
 }

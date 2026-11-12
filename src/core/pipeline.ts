@@ -2,15 +2,17 @@ import { DEFAULT_CONFIG, type Config } from './config.ts';
 import { parseJournal } from './journal.ts';
 import { parseRegistry } from './registry.ts';
 import { computeScore } from './score.ts';
-import { dirOf, fileKey, mostFrequent, norm, periodFromDate } from './text.ts';
+import { dateFromTimestamp, dirOf, fileKey, formatDate, mostFrequent, norm } from './text.ts';
 import type {
-  DocumentEval, Evaluation, FileReport, Issue, Journal, MissingPart, Registry, Remark, SheetData,
+  DocumentEval, Evaluation, Expertise, FileReport, Issue, Journal, MissingPart, Registry, Remark, SheetData,
 } from './types.ts';
 
 export interface InputWorkbook {
   /** Путь относительно выбранной папки, с разделителем `/`. */
   path: string;
   sheets: SheetData[];
+  /** Время последнего изменения файла, мс. По нему определяется дата версии, если она не указана в перечне. */
+  modified?: number | null;
 }
 
 function countFacts(remarks: Remark[]): { design: number; content: number; repeats: number } {
@@ -30,7 +32,7 @@ function folderDistance(a: string, b: string): number {
 
 /**
  * Из журналов с одинаковым именем выбирает ближайший к перечню по дереву папок:
- * файлы за разные периоды обычно называются одинаково и лежат в соседних папках.
+ * версии за разные периоды обычно называются одинаково и лежат в соседних папках.
  */
 function closestJournal(candidates: Journal[], registryPath: string): { journal: Journal | null; ambiguous: boolean } {
   const ranked = candidates
@@ -45,17 +47,28 @@ function baseName(path: string): string {
   return (path.split('/').pop() ?? path).replace(/\.(xlsx|xlsm)$/i, '');
 }
 
+function lastRemarkDate(remarks: Remark[]): string | null {
+  return remarks.map((r) => r.date).filter((d): d is string => d !== null).sort().pop() ?? null;
+}
+
+/** Ключ документа, общий для его версий, загруженных в разное время. */
+export function documentKey(project: string, document: string, expertise: Expertise | null): string {
+  return [norm(project), norm(document), expertise ?? ''].join('|');
+}
+
 /**
  * Полный расчёт по набору книг из папки: распознаёт журналы и перечни документов,
- * связывает их между собой и считает ИИКД по каждому документу.
+ * связывает их между собой и считает ИИКД по каждой версии каждого документа.
  */
 export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFIG): Evaluation {
   const journals = new Map<string, Journal>();
   const registries: Registry[] = [];
   const files: FileReport[] = [];
   const issues: Issue[] = [];
+  const fileDates = new Map<string, string>();
 
   for (const workbook of workbooks) {
+    if (typeof workbook.modified === 'number') fileDates.set(workbook.path, dateFromTimestamp(workbook.modified));
     let recognized = false;
     let incompleteRegistry = false;
     for (const sheet of workbook.sheets) {
@@ -76,11 +89,6 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
         recognized = true;
         registries.push(parsed.registry);
         issues.push(...parsed.registry.issues);
-        files.push({
-          path: workbook.path,
-          kind: 'registry',
-          note: `Перечень документов: ${parsed.registry.rows.length}, период: ${parsed.registry.period?.label ?? 'не указан'}`,
-        });
       } else if (parsed.kind === 'incomplete') {
         incompleteRegistry = true;
       }
@@ -106,9 +114,26 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
   const used = new Set<string>();
 
   for (const registry of registries) {
+    // Дата версии: указанная в перечне, иначе дата изменения файла перечня.
+    const registryDate = registry.asOf ?? fileDates.get(registry.path) ?? null;
+    if (!registry.asOf) {
+      issues.push({
+        level: 'warning',
+        file: registry.path,
+        message: registryDate
+          ? `Над таблицей не указан отчётный период — дата версии взята по дате изменения файла (${formatDate(registryDate)}).`
+          : 'Над таблицей не указан отчётный период.',
+      });
+    }
+    files.push({
+      path: registry.path,
+      kind: 'registry',
+      note: `Перечень документов: ${registry.rows.length}; дата данных: ${registryDate ? formatDate(registryDate) : 'не указана'}`,
+    });
+
+    const seen = new Map<string, number>();
     for (const row of registry.rows) {
       const missing: MissingPart[] = [];
-      if (!registry.period) missing.push('period');
       if (row.cycles === null) missing.push('cycles');
 
       let journal: Journal | null = null;
@@ -134,17 +159,34 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
       }
 
       const remarks = journal?.remarks ?? [];
+      const asOf = registryDate ?? (journal ? (fileDates.get(journal.path) ?? lastRemarkDate(remarks)) : null);
+      if (!asOf) missing.push('date');
+
+      // Одноимённые документы одного перечня — разные документы: различаем их по порядку строк.
+      const project = row.project || mostFrequent(remarks.map((r) => r.project));
+      const baseKey = documentKey(project, row.document, row.expertise);
+      const occurrence = (seen.get(baseKey) ?? 0) + 1;
+      seen.set(baseKey, occurrence);
+      if (occurrence === 2) {
+        issues.push({
+          level: 'warning',
+          file: registry.path,
+          row: row.row,
+          message: `В перечне несколько строк «${row.document}» с одинаковыми проектом и видом экспертизы. Версии таких документов сопоставляются по порядку строк — лучше уточнить наименования.`,
+        });
+      }
+
       const facts = journal || noRemarks ? { ...countFacts(remarks), cycles: row.cycles } : null;
       documents.push({
         id: `${registry.path}#${row.row}`,
-        period: registry.period,
-        project: row.project || mostFrequent(remarks.map((r) => r.project)),
+        docKey: occurrence > 1 ? `${baseKey}#${occurrence}` : baseKey,
+        asOf,
+        project,
         manager: row.manager,
         developer: row.developer,
         document: row.document,
         status: row.status,
-        internal: row.internal,
-        external: row.external,
+        expertise: row.expertise,
         pages: row.pages,
         registryPath: registry.path,
         journalPath: journal?.path ?? null,
@@ -167,21 +209,22 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
       continue;
     }
     files.push({ path: journal.path, kind: 'journal', note: `ЖУЗ: замечаний ${journal.remarks.length}; в перечне документов не указан` });
-    const lastDate = journal.remarks.map((r) => r.date).filter((d): d is string => d !== null).sort().pop();
-    const period = lastDate ? periodFromDate(lastDate) : null;
+    const asOf = fileDates.get(journal.path) ?? lastRemarkDate(journal.remarks);
     const missing: MissingPart[] = ['registry', 'cycles'];
-    if (!period) missing.push('period');
+    if (!asOf) missing.push('date');
+    const project = mostFrequent(journal.remarks.map((r) => r.project));
+    const document = mostFrequent(journal.remarks.map((r) => r.document)) || baseName(journal.path);
     const facts = { ...countFacts(journal.remarks), cycles: null };
     documents.push({
       id: journal.path,
-      period,
-      project: mostFrequent(journal.remarks.map((r) => r.project)),
+      docKey: documentKey(project, document, null),
+      asOf,
+      project,
       manager: '',
       developer: '',
-      document: mostFrequent(journal.remarks.map((r) => r.document)) || baseName(journal.path),
+      document,
       status: '',
-      internal: null,
-      external: null,
+      expertise: null,
       pages: null,
       registryPath: null,
       journalPath: journal.path,
@@ -194,9 +237,10 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
 
   documents.sort(
     (a, b) =>
-      (a.period?.key ?? '').localeCompare(b.period?.key ?? '') ||
+      (a.asOf ?? '').localeCompare(b.asOf ?? '') ||
       a.project.localeCompare(b.project, 'ru') ||
-      a.document.localeCompare(b.document, 'ru'),
+      a.document.localeCompare(b.document, 'ru') ||
+      a.id.localeCompare(b.id),
   );
   files.sort((a, b) => a.path.localeCompare(b.path, 'ru'));
   return { documents, files, issues };

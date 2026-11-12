@@ -1,9 +1,9 @@
-import type { Cell, Period } from './types.ts';
+import type { Cell, Granularity, Period } from './types.ts';
 
 /** Текст ячейки без неразрывных пробелов и пробелов по краям. */
 export function str(v: Cell | undefined): string {
   if (v === null || v === undefined) return '';
-  return String(v).replace(/ /g, ' ').trim();
+  return String(v).replace(/\u00a0/g, ' ').trim();
 }
 
 /** Ключ для сравнения: нижний регистр, «ё» как «е», одиночные пробелы. */
@@ -35,62 +35,78 @@ export function parseDate(v: Cell | undefined): string | null {
   return null;
 }
 
-export function period(year: number, quarter: number): Period {
-  return { key: `${year}-Q${quarter}`, label: `${quarter} кв. ${year}`, year, quarter };
+const MONTH_STEMS = ['январ', 'феврал', 'март', 'апрел', 'ма', 'июн', 'июл', 'август', 'сентябр', 'октябр', 'ноябр', 'декабр'];
+const MONTH_NAMES = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь'];
+const ROMAN: Record<string, number> = { i: 1, ii: 2, iii: 3, iv: 4 };
+
+/** Последний день месяца. */
+function monthEnd(year: number, month: number): string {
+  return `${year}-${String(month).padStart(2, '0')}-${String(new Date(Date.UTC(year, month, 0)).getUTCDate()).padStart(2, '0')}`;
 }
 
-export function periodFromDate(isoDate: string): Period {
+/** Период, в который попадает дата, при выбранной детализации. */
+export function bucketOf(isoDate: string, granularity: Granularity): Period {
   const year = Number(isoDate.slice(0, 4));
   const month = Number(isoDate.slice(5, 7));
-  return period(year, Math.ceil(month / 3));
+  if (granularity === 'month') {
+    return { key: isoDate.slice(0, 7), label: `${MONTH_NAMES[month - 1]} ${year}` };
+  }
+  const quarter = Math.ceil(month / 3);
+  return { key: `${year}-Q${quarter}`, label: `${quarter} кв. ${year}` };
 }
 
-const ROMAN: Record<string, number> = { i: 1, ii: 2, iii: 3, iv: 4 };
-const MONTHS = ['январ', 'феврал', 'март', 'апрел', 'ма', 'июн', 'июл', 'август', 'сентябр', 'октябр', 'ноябр', 'декабр'];
+/** `ДД.ММ.ГГГГ` из `ГГГГ-ММ-ДД`. */
+export function formatDate(isoDate: string): string {
+  return `${isoDate.slice(8, 10)}.${isoDate.slice(5, 7)}.${isoDate.slice(0, 4)}`;
+}
+
+/** Локальная календарная дата из отметки времени файла. */
+export function dateFromTimestamp(ms: number): string {
+  const d = new Date(ms);
+  return iso(d.getFullYear(), d.getMonth() + 1, d.getDate())!;
+}
 
 /**
- * Отчётный период из свободного текста: «3 квартал 2026», «III кв. 2026», «Q3 2026»,
- * «сентябрь 2026», «09.2026», «05.10.2026». Месяц и дата приводятся к кварталу.
+ * Дата, на которую составлен перечень, из свободного текста: «05.10.2026»,
+ * «сентябрь 2026», «09.2026», «3 квартал 2026», «III кв. 2026», «Q3 2026».
+ * Для месяца и квартала возвращается последний день периода.
  */
-export function parsePeriod(text: Cell | undefined): Period | null {
-  if (typeof text === 'number') {
-    const d = parseDate(text);
-    return d ? periodFromDate(d) : null;
-  }
+export function parseReportingDate(text: Cell | undefined): string | null {
+  if (typeof text === 'number') return parseDate(text);
   const s = norm(text);
   if (!s) return null;
 
   const fullDate = /(\d{1,2})[./](\d{1,2})[./](\d{4})/.exec(s);
-  if (fullDate) {
-    const d = iso(Number(fullDate[3]), Number(fullDate[2]), Number(fullDate[1]));
-    return d ? periodFromDate(d) : null;
-  }
+  if (fullDate) return iso(Number(fullDate[3]), Number(fullDate[2]), Number(fullDate[1]));
+  const isoDate = /(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (isoDate) return iso(Number(isoDate[1]), Number(isoDate[2]), Number(isoDate[3]));
 
   const yearMatch = /(20\d{2})/.exec(s);
   if (!yearMatch) return null;
   const year = Number(yearMatch[1]);
   const rest = s.replace(yearMatch[0], ' ');
+  const quarterEnd = (quarter: number) => monthEnd(year, quarter * 3);
 
   let m = /(?:^|[^\d])([1-4])\s*-?\s*(?:й|ый|ой|ий)?\s*кв/.exec(rest);
-  if (m) return period(year, Number(m[1]));
+  if (m) return quarterEnd(Number(m[1]));
   m = /(?:^|[^a-z])(iv|iii|ii|i)\s*кв/.exec(rest);
-  if (m) return period(year, ROMAN[m[1]!]!);
+  if (m) return quarterEnd(ROMAN[m[1]!]!);
   m = /кв(?:артал)?\.?\s*([1-4])(?:[^\d]|$)/.exec(rest);
-  if (m) return period(year, Number(m[1]));
+  if (m) return quarterEnd(Number(m[1]));
   m = /q\s*([1-4])|([1-4])\s*q/.exec(rest);
-  if (m) return period(year, Number(m[1] ?? m[2]));
+  if (m) return quarterEnd(Number(m[1] ?? m[2]));
 
   // «Ма» совпадает и с «март», поэтому май проверяется по целому слову.
-  for (let i = 0; i < MONTHS.length; i++) {
-    const stem = MONTHS[i]!;
+  for (let i = 0; i < MONTH_STEMS.length; i++) {
+    const stem = MONTH_STEMS[i]!;
     const hit = stem === 'ма' ? /(?:^|[^а-я])ма[йяе](?:[^а-я]|$)/.test(rest) : rest.includes(stem);
-    if (hit) return period(year, Math.ceil((i + 1) / 3));
+    if (hit) return monthEnd(year, i + 1);
   }
   // «09.2026»: после удаления года остаётся номер месяца с разделителем.
   m = /(?:^|[^\d])(\d{1,2})\s*[./-]/.exec(rest);
   if (m) {
     const month = Number(m[1]);
-    if (month >= 1 && month <= 12) return period(year, Math.ceil(month / 3));
+    if (month >= 1 && month <= 12) return monthEnd(year, month);
   }
   return null;
 }

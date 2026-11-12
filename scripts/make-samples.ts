@@ -1,5 +1,6 @@
 // Генерирует демонстрационную папку samples/demo с вымышленными данными:
-// два отчётных периода, в каждом расширенный Шаблон_1 и журналы учёта замечаний.
+// три загрузки в разные месяцы, в каждой расширенный Шаблон_1 и журналы учёта замечаний.
+// Часть документов загружается повторно — на них видно отслеживание версий.
 // Запуск: npm run samples
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -32,6 +33,8 @@ interface Doc {
   manager: string;
   developer: string;
   name: string;
+  /** Вид экспертизы: на каждую — своя строка перечня и свой журнал. */
+  expertise: 'internal' | 'external';
   status: string;
   cycles: number | null;
   pages: number;
@@ -68,14 +71,16 @@ function journalRows(doc: Doc, date: string): WriteCell[][] {
   return rows;
 }
 
-function period(folder: string, label: string, date: string, docs: Doc[]): void {
+function upload(folder: string, label: string, date: string, docs: Doc[]): void {
   const rows: WriteCell[][] = [[`Отчетный период: ${label}`], [], REGISTRY_HEADER];
   docs.forEach((doc, index) => {
-    const file = doc.remarks ? `ЖУЗ_${doc.project}_${doc.name}.xlsx`.replace(/[ «»]/g, '_') : 'Без замечаний';
+    const suffix = doc.expertise === 'internal' ? 'внутр' : 'внеш';
+    const file = doc.remarks ? `ЖУЗ_${doc.project}_${doc.name}_${suffix}.xlsx`.replace(/[ «»]/g, '_') : 'Без замечаний';
     if (doc.remarks) write(join(folder, doc.project, file), [{ name: 'Шаблон ЖУЗ', rows: journalRows(doc, date) }]);
     rows.push([
-      index + 1, doc.project, doc.manager, doc.developer, doc.name, doc.status, 'СЭД',
-      `S:\\Проекты\\${doc.project}`, 'да', 'нет', doc.cycles, doc.pages, file,
+      index + 1, doc.project, doc.manager, doc.developer, doc.name, doc.status, 'СЭД', `S:\\Проекты\\${doc.project}`,
+      doc.expertise === 'internal' ? 'да' : 'нет', doc.expertise === 'external' ? 'да' : 'нет',
+      doc.cycles, doc.pages, file,
     ]);
   });
   write(join(folder, 'Шаблон_1.xlsx'), [{ name: 'Лист1', rows }]);
@@ -84,22 +89,31 @@ function period(folder: string, label: string, date: string, docs: Doc[]): void 
 const alpha = { project: 'Альфа', manager: 'Петров П.', developer: 'Аналитик' };
 const beta = { project: 'Бета', manager: 'Сидорова А.', developer: 'Архитектор' };
 const gamma = { project: 'Гамма', manager: 'Кузнецов Д.', developer: 'Аналитик' };
+const internal = { expertise: 'internal' } as const;
+const external = { expertise: 'external' } as const;
 
-period('2026 кв.2', '2 квартал 2026', '18.06.2026', [
-  { ...alpha, name: 'Техническое задание', status: 'Согласован', cycles: 2, pages: 40, remarks: { content: 14, design: 3 } },
-  { ...alpha, name: 'Проектное решение', status: 'На согласовании', cycles: 3, pages: 65, remarks: { content: 21, design: 6, repeats: 2 } },
-  { ...beta, name: 'Программа и методика испытаний', status: 'Согласован', cycles: 1, pages: 25, remarks: null },
-  { ...beta, name: 'Руководство пользователя', status: 'Согласован', cycles: 2, pages: 30, remarks: { content: 9, design: 5, other: 2 } },
-  { ...gamma, name: 'Матрица доступа', status: 'На согласовании', cycles: 5, pages: 12, remarks: { content: 30, design: 12, repeats: 4, rejected: 3 } },
+upload('2026-06 июнь', 'июнь 2026', '18.06.2026', [
+  { ...alpha, ...external, name: 'Техническое задание', status: 'На согласовании', cycles: 2, pages: 40, remarks: { content: 14, design: 3 } },
+  { ...alpha, ...internal, name: 'Проектное решение', status: 'На согласовании', cycles: 1, pages: 65, remarks: { content: 21, design: 6, repeats: 2 } },
+  { ...beta, ...external, name: 'Программа и методика испытаний', status: 'Согласован', cycles: 1, pages: 25, remarks: null },
+  { ...gamma, ...external, name: 'Матрица доступа', status: 'На согласовании', cycles: 3, pages: 12, remarks: { content: 30, design: 12, repeats: 4, rejected: 3 } },
 ]);
 
-period('2026 кв.3', '3 квартал 2026', '22.09.2026', [
-  { ...alpha, name: 'Проектное решение', status: 'Согласован', cycles: 4, pages: 65, remarks: { content: 11, design: 2, repeats: 1 } },
-  { ...alpha, name: 'Руководство администратора', status: 'Согласован', cycles: 1, pages: 20, remarks: null },
-  { ...beta, name: 'Протокол испытаний', status: 'Согласован', cycles: 1, pages: 8, remarks: null },
-  { ...beta, name: 'Регламент сопровождения', status: 'На согласовании', cycles: null, pages: 15, remarks: { content: 6, design: 1 } },
-  { ...gamma, name: 'Матрица доступа', status: 'Согласован', cycles: 6, pages: 12, remarks: { content: 16, design: 7, repeats: 3 } },
-  { ...gamma, name: 'Частное техническое задание', status: 'На согласовании', cycles: 2, pages: 28, remarks: { content: 12, design: 4, other: 1 } },
+upload('2026-08 август', 'август 2026', '20.08.2026', [
+  { ...alpha, ...internal, name: 'Проектное решение', status: 'На доработке', cycles: 2, pages: 65, remarks: { content: 13, design: 4, repeats: 1 } },
+  { ...alpha, ...external, name: 'Проектное решение', status: 'На согласовании', cycles: 1, pages: 65, remarks: { content: 9, design: 2 } },
+  { ...beta, ...external, name: 'Руководство пользователя', status: 'Согласован', cycles: 2, pages: 30, remarks: { content: 9, design: 5, other: 2 } },
+  { ...gamma, ...external, name: 'Матрица доступа', status: 'На доработке', cycles: 5, pages: 12, remarks: { content: 22, design: 9, repeats: 3 } },
+]);
+
+upload('2026-09 сентябрь', 'сентябрь 2026', '22.09.2026', [
+  { ...alpha, ...external, name: 'Техническое задание', status: 'Согласован', cycles: 3, pages: 40, remarks: { content: 8, design: 2 } },
+  { ...alpha, ...internal, name: 'Проектное решение', status: 'Согласован', cycles: 3, pages: 65, remarks: { content: 6, design: 1 } },
+  { ...alpha, ...external, name: 'Проектное решение', status: 'На доработке', cycles: 2, pages: 65, remarks: { content: 12, design: 3, repeats: 1 } },
+  { ...beta, ...external, name: 'Протокол испытаний', status: 'Согласован', cycles: 1, pages: 8, remarks: null },
+  { ...beta, ...internal, name: 'Регламент сопровождения', status: 'На согласовании', cycles: null, pages: 15, remarks: { content: 6, design: 1 } },
+  { ...gamma, ...external, name: 'Матрица доступа', status: 'Согласован', cycles: 6, pages: 12, remarks: { content: 16, design: 7, repeats: 3 } },
+  { ...gamma, ...external, name: 'Частное техническое задание', status: 'На согласовании', cycles: 2, pages: 28, remarks: { content: 12, design: 4, other: 1 } },
 ]);
 
 console.log(`Демонстрационные данные записаны в ${ROOT}`);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { byManager, byPeriod, listPeriods, summarize } from '../src/core/aggregate.ts';
+import { byManager, summarize } from '../src/core/aggregate.ts';
 import { evaluate } from '../src/core/pipeline.ts';
 import { journalSheet, registrySheet, type RemarkInput } from './helpers.ts';
 
@@ -66,8 +66,8 @@ describe('расчёт по папке', () => {
     const result = evaluate([{ path: 'ЖУЗ_Отчет.xlsx', sheets: [journalSheet([{ date: '29.07.2026' }, { date: '02.10.2026', project: null }])] }]);
     expect(result.documents).toHaveLength(1);
     expect(result.documents[0]).toMatchObject({
-      project: 'Проект Альфа', document: 'Техническое задание', manager: '',
-      missing: ['registry', 'cycles'], period: { key: '2026-Q4' },
+      project: 'Проект Альфа', document: 'Техническое задание', manager: '', expertise: null,
+      missing: ['registry', 'cycles'], asOf: '2026-10-02',
     });
   });
 
@@ -80,19 +80,61 @@ describe('расчёт по папке', () => {
     expect(result.files.map((f) => f.kind)).toEqual(['skipped', 'skipped']);
   });
 
-  it('при одинаковых именах берёт журнал из папки перечня', () => {
+  it('дата версии: из перечня, иначе по дате файла, иначе по последнему замечанию', () => {
+    const june = new Date(2026, 5, 15).getTime();
+    const july = new Date(2026, 6, 20).getTime();
+    const dated = evaluate([
+      { path: 'Шаблон_1.xlsx', modified: july, sheets: [registrySheet([{ document: 'ТЗ', cycles: 1, journalFile: 'ЖУЗ' }])] },
+      { path: 'ЖУЗ.xlsx', modified: june, sheets: [journalSheet(content(2))] },
+    ]);
+    expect(dated.documents[0]!.asOf).toBe('2026-09-30');
+    expect(dated.issues).toEqual([]);
+
+    const undated = evaluate([
+      { path: 'Шаблон_1.xlsx', modified: july, sheets: [registrySheet([{ document: 'ТЗ', cycles: 1, journalFile: 'ЖУЗ' }], 'Отчетный период:')] },
+      { path: 'ЖУЗ.xlsx', modified: june, sheets: [journalSheet(content(2))] },
+    ]);
+    expect(undated.documents[0]).toMatchObject({ asOf: '2026-07-20', missing: [] });
+    expect(undated.issues).toEqual([expect.objectContaining({ level: 'warning', file: 'Шаблон_1.xlsx' })]);
+
+    const standalone = evaluate([{ path: 'ЖУЗ.xlsx', modified: june, sheets: [journalSheet(content(2))] }]);
+    expect(standalone.documents[0]!.asOf).toBe('2026-06-15');
+
+    const nothing = evaluate([
+      { path: 'Шаблон_1.xlsx', sheets: [registrySheet([{ document: 'ТЗ', cycles: 1, journalFile: 'без замечаний' }], 'Отчетный период:')] },
+    ]);
+    expect(nothing.documents[0]).toMatchObject({ asOf: null, missing: ['date'] });
+  });
+
+  it('внутренняя и внешняя экспертиза одного документа оцениваются отдельно', () => {
     const result = evaluate([
-      { path: 'Q3/Шаблон_1.xlsx', sheets: [registrySheet([{ document: 'ТЗ', cycles: 1, journalFile: 'ЖУЗ.xlsx' }], 'Отчетный период: 3 квартал 2026')] },
-      { path: 'Q4/Шаблон_1.xlsx', sheets: [registrySheet([{ document: 'ТЗ', cycles: 1, journalFile: 'ЖУЗ.xlsx' }], 'Отчетный период: 4 квартал 2026')] },
-      { path: 'Q3/ЖУЗ.xlsx', sheets: [journalSheet(content(20))] },
-      { path: 'Q4/ЖУЗ.xlsx', sheets: [journalSheet(content(2))] },
+      {
+        path: 'Шаблон_1.xlsx',
+        sheets: [registrySheet([
+          { document: 'ТЗ', internal: 'да', external: 'нет', cycles: 1, journalFile: 'ЖУЗ_внутр' },
+          { document: 'ТЗ', internal: 'нет', external: 'да', cycles: 2, journalFile: 'ЖУЗ_внеш' },
+        ])],
+      },
+      { path: 'ЖУЗ_внутр.xlsx', sheets: [journalSheet(content(2))] },
+      { path: 'ЖУЗ_внеш.xlsx', sheets: [journalSheet(content(20))] },
     ]);
-    expect(result.documents.map((d) => [d.period?.key, d.journalPath, d.score?.iikd])).toEqual([
-      ['2026-Q3', 'Q3/ЖУЗ.xlsx', 79],
-      ['2026-Q4', 'Q4/ЖУЗ.xlsx', 100],
+    expect(result.documents.map((d) => [d.expertise, d.score?.iikd])).toEqual([['internal', 100], ['external', 79]]);
+    expect(new Set(result.documents.map((d) => d.docKey)).size).toBe(2);
+    expect(result.issues).toEqual([]);
+  });
+
+  it('одноимённые документы одного перечня остаются разными документами', () => {
+    const result = evaluate([
+      {
+        path: 'Шаблон_1.xlsx',
+        sheets: [registrySheet([
+          { document: 'Руководство пользователя', cycles: 1, journalFile: 'без замечаний' },
+          { document: 'Руководство пользователя', cycles: 1, journalFile: 'без замечаний' },
+        ])],
+      },
     ]);
-    expect(listPeriods(result.documents).map((p) => p.label)).toEqual(['3 кв. 2026', '4 кв. 2026']);
-    expect(byPeriod(result.documents).map((g) => [g.label, g.average])).toEqual([['3 кв. 2026', 79], ['4 кв. 2026', 100]]);
+    expect(new Set(result.documents.map((d) => d.docKey)).size).toBe(2);
+    expect(result.issues).toEqual([expect.objectContaining({ level: 'warning', row: 5 })]);
   });
 });
 
@@ -106,9 +148,9 @@ describe('выбор журнала при одинаковых именах ф�
       { path: '2026 кв.2/Альфа/ЖУЗ.xlsx', sheets: [journalSheet(content(20))] },
       { path: '2026 кв.3/Альфа/ЖУЗ.xlsx', sheets: [journalSheet(content(2))] },
     ]);
-    expect(result.documents.map((d) => [d.period?.key, d.journalPath])).toEqual([
-      ['2026-Q2', '2026 кв.2/Альфа/ЖУЗ.xlsx'],
-      ['2026-Q3', '2026 кв.3/Альфа/ЖУЗ.xlsx'],
+    expect(result.documents.map((d) => [d.asOf, d.journalPath, d.score?.iikd])).toEqual([
+      ['2026-06-30', '2026 кв.2/Альфа/ЖУЗ.xlsx', 79],
+      ['2026-09-30', '2026 кв.3/Альфа/ЖУЗ.xlsx', 100],
     ]);
     expect(result.issues).toEqual([]);
   });

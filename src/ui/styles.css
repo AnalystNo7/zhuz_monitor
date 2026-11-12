@@ -63,7 +63,23 @@ button:disabled { opacity: 0.6; cursor: default; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 @media (prefers-color-scheme: dark) { button.primary { color: #10131a; } }
 
-.filter { display: inline-flex; gap: 8px; align-items: center; margin-top: 16px; color: var(--muted); }
+.filters { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; margin-top: 16px; }
+.filters label { display: inline-flex; gap: 8px; align-items: center; color: var(--muted); }
+.segmented { display: inline-flex; }
+.segmented button { border-radius: 0; margin-left: -1px; }
+.segmented button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+.segmented button:last-child { border-radius: 0 6px 6px 0; }
+.segmented button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+@media (prefers-color-scheme: dark) { .segmented button.active { color: #10131a; } }
+
+button.link { padding: 0; border: 0; background: none; color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.small { font-size: 12px; }
+div.small { margin-top: 2px; }
+.nowrap { white-space: nowrap; }
+.up { color: var(--green); white-space: nowrap; }
+.down { color: var(--red); white-space: nowrap; }
+tr.history td { background: var(--bg); }
+tr.selected td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 
 .alert { margin-top: 16px; padding: 10px 14px; border-radius: 6px; background: var(--red-bg); color: var(--red); }
 
