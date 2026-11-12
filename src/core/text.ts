@@ -49,10 +49,16 @@ export function bucketOf(isoDate: string, granularity: Granularity): Period {
   const year = Number(isoDate.slice(0, 4));
   const month = Number(isoDate.slice(5, 7));
   if (granularity === 'month') {
-    return { key: isoDate.slice(0, 7), label: `${MONTH_NAMES[month - 1]} ${year}` };
+    return { key: isoDate.slice(0, 7), label: `${MONTH_NAMES[month - 1]} ${year}`, end: monthEnd(year, month) };
   }
   const quarter = Math.ceil(month / 3);
-  return { key: `${year}-Q${quarter}`, label: `${quarter} кв. ${year}` };
+  return { key: `${year}-Q${quarter}`, label: `${quarter} кв. ${year}`, end: monthEnd(year, quarter * 3) };
+}
+
+/** Следующий за данным период той же детализации. */
+export function nextPeriod(period: Period, granularity: Granularity): Period {
+  const next = new Date(Date.UTC(Number(period.end.slice(0, 4)), Number(period.end.slice(5, 7)) - 1, Number(period.end.slice(8, 10)) + 1));
+  return bucketOf(next.toISOString().slice(0, 10), granularity);
 }
 
 /** `ДД.ММ.ГГГГ` из `ГГГГ-ММ-ДД`. */
@@ -120,19 +126,4 @@ export function fileKey(path: string): string {
 export function dirOf(path: string): string {
   const i = path.lastIndexOf('/');
   return i < 0 ? '' : path.slice(0, i);
-}
-
-/** Самое частое непустое значение; при равенстве — встретившееся раньше. */
-export function mostFrequent(values: string[]): string {
-  const counts = new Map<string, number>();
-  for (const v of values) if (v) counts.set(v, (counts.get(v) ?? 0) + 1);
-  let best = '';
-  let bestCount = 0;
-  for (const [v, c] of counts) {
-    if (c > bestCount) {
-      best = v;
-      bestCount = c;
-    }
-  }
-  return best;
 }

@@ -7,6 +7,7 @@ export function classifyStatus(raw: Cell | undefined, cfg: Config): RemarkStatus
   if (!s) return 'empty';
   if (cfg.acceptedStatuses.includes(s)) return 'accepted';
   if (cfg.rejectedStatuses.includes(s)) return 'rejected';
+  if (cfg.pendingStatuses.includes(s)) return 'pending';
   return 'unknown';
 }
 
@@ -32,7 +33,16 @@ export interface CategoryResult {
   categories: string[];
   /** Фрагменты, которые не удалось отнести ни к одной категории справочника. */
   unknown: string[];
+  /** Все показатели, на которые указывают категории замечания. */
+  indicators: RemarkIndicator[];
+  /** Показатель, по которому замечание считается: первый по приоритету. */
   indicator: RemarkIndicator | null;
+}
+
+/** Из нескольких показателей выбирает тот, что стоит раньше в `indicatorPriority`. */
+export function pickIndicator(indicators: Iterable<RemarkIndicator>, cfg: Config): RemarkIndicator | null {
+  const set = new Set(indicators);
+  return cfg.indicatorPriority.find((i) => set.has(i)) ?? null;
 }
 
 /**
@@ -53,6 +63,5 @@ export function classifyCategories(raw: Cell | undefined, cfg: Config): Category
     if (!categories.includes(category.id)) categories.push(category.id);
     if (category.indicator) indicators.add(category.indicator);
   }
-  const indicator = cfg.indicatorPriority.find((i) => indicators.has(i)) ?? null;
-  return { categories, unknown, indicator };
+  return { categories, unknown, indicators: [...indicators], indicator: pickIndicator(indicators, cfg) };
 }

@@ -1,12 +1,10 @@
 import { useMemo, useRef, useState } from 'preact/hooks';
-import {
-  buildHistories, byManager, documentsInPeriod, latestVersions, listPeriods, previousVersion, summarize, trend,
-  type GroupSummary,
-} from '../core/aggregate.ts';
+import { byManager, summarize, trend, type GroupSummary, type TrendPoint } from '../core/aggregate.ts';
 import { DEFAULT_CONFIG, INDICATOR_IDS } from '../core/config.ts';
 import { round2, zoneOf } from '../core/score.ts';
-import { formatDate } from '../core/text.ts';
-import type { DocumentEval, Evaluation, Expertise, Granularity, IndicatorId, MissingPart, Zone } from '../core/types.ts';
+import { formatDate, norm } from '../core/text.ts';
+import { history, listPeriods, stateAt, statesAt } from '../core/timeline.ts';
+import type { DocumentState, Evaluation, Expertise, Granularity, IndicatorId, MissingPart, Zone } from '../core/types.ts';
 import { canPickFolder, folderFromFileList, pickFolder, type SourceFolder } from '../io/folder.ts';
 import { loadFolder } from './load.ts';
 
@@ -18,9 +16,11 @@ const MISSING_LABEL: Record<MissingPart, string> = {
   registry: 'нет в перечне документов',
   journal: 'нет ЖУЗ',
   cycles: 'циклы не указаны',
-  date: 'дата версии не определена',
+  date: 'дата начала не определена',
 };
 const LEVEL_LABEL = { error: 'Ошибка', warning: 'Внимание', info: 'К сведению' } as const;
+/** Значение фильтра для документов, у которых статус не указан. */
+const NO_STATUS = '—';
 
 type ExpertiseFilter = '' | Expertise;
 
@@ -30,6 +30,10 @@ function fmt(value: number | null): string {
 
 function percent(part: number, total: number): string {
   return total === 0 ? '—' : `${Math.round((part / total) * 100)}%`;
+}
+
+function statusKey(state: DocumentState): string {
+  return norm(state.status) || NO_STATUS;
 }
 
 /** Изменение показателя: стрелка и величина; рост — к лучшему. */
@@ -47,6 +51,7 @@ export function App() {
   const [granularity, setGranularity] = useState<Granularity>('quarter');
   const [periodKey, setPeriodKey] = useState('');
   const [expertise, setExpertise] = useState<ExpertiseFilter>('');
+  const [status, setStatus] = useState('');
   const input = useRef<HTMLInputElement>(null);
 
   async function load(source: SourceFolder) {
@@ -56,6 +61,7 @@ export function App() {
       setEvaluation(await loadFolder(source, cfg));
       setFolder(source);
       setPeriodKey('');
+      setStatus('');
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -76,19 +82,25 @@ export function App() {
     }
   }
 
-  // Все версии с учётом фильтра по виду экспертизы.
-  const versions = useMemo(
-    () => (evaluation?.documents ?? []).filter((d) => !expertise || d.expertise === expertise),
-    [evaluation, expertise],
-  );
-  const histories = useMemo(() => buildHistories(versions), [versions]);
-  const periods = useMemo(() => listPeriods(versions, granularity), [versions, granularity]);
-  // Без выбранного периода — текущее состояние: последняя версия каждого документа.
-  const documents = useMemo(
-    () => (periodKey ? documentsInPeriod(versions, granularity, periodKey) : latestVersions(versions)),
-    [versions, granularity, periodKey],
-  );
-  const hasExpertise = (evaluation?.documents ?? []).some((d) => d.expertise);
+  const documents = evaluation?.documents ?? [];
+  const periods = useMemo(() => listPeriods(documents, granularity), [documents, granularity]);
+  const selected = periods.find((p) => p.key === periodKey) ?? null;
+  // Без выбранного периода — текущее состояние по всем данным.
+  const asOf = selected?.end ?? null;
+  // Изменение считается к концу предыдущего периода; для текущего состояния — к концу предпоследнего.
+  const previousEnd = (selected ? periods[periods.indexOf(selected) - 1] : periods[periods.length - 2])?.end ?? null;
+
+  const current = useMemo(() => statesAt(documents, null, cfg), [documents]);
+  const statuses = useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const state of current) if (!labels.has(statusKey(state))) labels.set(statusKey(state), state.status.trim() || 'Статус не указан');
+    return [...labels].sort((a, b) => a[1].localeCompare(b[1], 'ru'));
+  }, [current]);
+
+  const matches = (state: DocumentState) => (!expertise || state.expertise === expertise) && (!status || statusKey(state) === status);
+  const states = useMemo(() => statesAt(documents, asOf, cfg).filter(matches), [documents, asOf, expertise, status]);
+  const points = useMemo(() => trend(documents, granularity, cfg, matches), [documents, granularity, expertise, status]);
+  const hasExpertise = current.some((s) => s.expertise);
 
   return (
     <div class="page">
@@ -161,14 +173,25 @@ export function App() {
               ))}
             </div>
             <label>
-              Период
+              Состояние
               <select id="period" value={periodKey} onChange={(e) => setPeriodKey(e.currentTarget.value)}>
-                <option value="">Текущее состояние (последние версии)</option>
-                {periods.map((p) => (
-                  <option key={p.key} value={p.key}>{p.label}</option>
+                <option value="">Текущее</option>
+                {[...periods].reverse().map((p) => (
+                  <option key={p.key} value={p.key}>на конец периода: {p.label}</option>
                 ))}
               </select>
             </label>
+            {statuses.length > 1 && (
+              <label>
+                Статус документа
+                <select id="status" value={status} onChange={(e) => setStatus(e.currentTarget.value)}>
+                  <option value="">Все</option>
+                  {statuses.map(([key, label]) => (
+                    <option key={key} value={key}>{label}</option>
+                  ))}
+                </select>
+              </label>
+            )}
             {hasExpertise && (
               <label>
                 Экспертиза
@@ -180,10 +203,10 @@ export function App() {
               </label>
             )}
           </div>
-          <SummaryCards documents={documents} />
-          <TrendTable groups={trend(versions, granularity)} granularity={granularity} selected={periodKey} onSelect={setPeriodKey} />
-          <DocumentsTable documents={documents} histories={histories} />
-          <ManagersTable groups={byManager(documents.filter((d) => d.manager))} />
+          <SummaryCards states={states} />
+          <TrendTable points={points} granularity={granularity} selected={periodKey} onSelect={setPeriodKey} />
+          <DocumentsTable states={states} previousEnd={previousEnd} />
+          <ManagersTable groups={byManager(states.filter((s) => s.manager))} />
           <LoadLog evaluation={evaluation} />
         </>
       )}
@@ -191,8 +214,8 @@ export function App() {
   );
 }
 
-function SummaryCards({ documents }: { documents: DocumentEval[] }) {
-  const s = summarize(documents);
+function SummaryCards({ states }: { states: DocumentState[] }) {
+  const s = summarize(states);
   const zone = s.average === null ? null : zoneOf(s.average, cfg);
   return (
     <section class="cards">
@@ -217,13 +240,13 @@ function SummaryCards({ documents }: { documents: DocumentEval[] }) {
   );
 }
 
-function TrendTable(props: { groups: GroupSummary[]; granularity: Granularity; selected: string; onSelect: (key: string) => void }) {
-  const { groups } = props;
-  if (groups.length === 0) return null;
+function TrendTable(props: { points: TrendPoint[]; granularity: Granularity; selected: string; onSelect: (key: string) => void }) {
+  const { points } = props;
+  if (points.length === 0) return null;
   return (
     <section>
       <h2>Динамика по {props.granularity === 'quarter' ? 'кварталам' : 'месяцам'}</h2>
-      <p class="muted">В каждом периоде учтена последняя версия каждого документа, загруженная в этом периоде.</p>
+      <p class="muted">Нарастающим итогом: на конец периода учтены все документы, начатые к этому времени, и все выданные к нему замечания.</p>
       <div class="scroll">
         <table>
           <thead>
@@ -236,8 +259,8 @@ function TrendTable(props: { groups: GroupSummary[]; granularity: Granularity; s
             </tr>
           </thead>
           <tbody>
-            {groups.map((g, index) => {
-              const previous = index > 0 ? groups[index - 1]!.average : null;
+            {points.map((g, index) => {
+              const previous = index > 0 ? points[index - 1]!.average : null;
               const change = g.average !== null && previous !== null ? round2(g.average - previous) : null;
               return (
                 <tr key={g.key} class={g.key === props.selected ? 'selected' : ''}>
@@ -260,10 +283,10 @@ function TrendTable(props: { groups: GroupSummary[]; granularity: Granularity; s
   );
 }
 
-function IndicatorCell({ doc, id }: { doc: DocumentEval; id: IndicatorId }) {
-  if (!doc.score || !doc.facts) return <td class="num muted">—</td>;
-  if (id === 'cycles' && doc.facts.cycles === null) return <td class="num muted" title="Число циклов не указано">?</td>;
-  const indicator = doc.score.indicators[id];
+function IndicatorCell({ state, id }: { state: DocumentState; id: IndicatorId }) {
+  if (!state.score || !state.facts) return <td class="num muted">—</td>;
+  if (id === 'cycles' && state.facts.cycles === null) return <td class="num muted" title="Число циклов не указано">?</td>;
+  const indicator = state.score.indicators[id];
   return (
     <td class={`num ${indicator.over > 0 ? 'over' : ''}`} title={`Норматив ${fmt(indicator.norm)}, сверх нормы ${fmt(indicator.over)}`}>
       {fmt(indicator.fact)} <span class="muted">→ {fmt(indicator.score)}</span>
@@ -271,25 +294,28 @@ function IndicatorCell({ doc, id }: { doc: DocumentEval; id: IndicatorId }) {
   );
 }
 
-function Score({ doc }: { doc: DocumentEval }) {
-  if (!doc.score) return <span class="muted">нет оценки</span>;
-  return <span class={`badge zone-${doc.score.zone}`} title={ZONE_LABEL[doc.score.zone]}>{fmt(doc.score.iikd)}</span>;
+function Score({ state }: { state: DocumentState }) {
+  if (!state.score) return <span class="muted">нет оценки</span>;
+  return <span class={`badge zone-${state.score.zone}`} title={ZONE_LABEL[state.score.zone]}>{fmt(state.score.iikd)}</span>;
 }
 
-function DocumentsTable({ documents, histories }: { documents: DocumentEval[]; histories: Map<string, DocumentEval[]> }) {
+function DocumentsTable({ states, previousEnd }: { states: DocumentState[]; previousEnd: string | null }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   return (
     <section>
       <h2>Документы</h2>
-      <p class="muted">В колонках показателей: фактическое количество → балл показателя. «Изменение» — к предыдущей версии документа.</p>
+      <p class="muted">
+        В колонках показателей: фактическое количество → балл показателя.
+        {previousEnd && ` «Изменение» — к состоянию на ${formatDate(previousEnd)}.`}
+      </p>
       <div class="scroll">
         <table>
           <thead>
             <tr>
-              <th>Данные на</th>
               <th>Проект</th>
               <th>РП</th>
               <th>Документ</th>
+              <th class="num">Замечаний</th>
               {INDICATOR_IDS.map((id) => (
                 <th key={id} class="num">{cfg.indicators[id].short}</th>
               ))}
@@ -299,51 +325,64 @@ function DocumentsTable({ documents, histories }: { documents: DocumentEval[]; h
             </tr>
           </thead>
           <tbody>
-            {documents.map((doc) => {
-              const versions = histories.get(doc.docKey) ?? [doc];
-              const previous = previousVersion(doc, histories);
-              const change = doc.score && previous?.score ? round2(doc.score.iikd - previous.score.iikd) : null;
-              const details = [doc.expertise ? EXPERTISE_LABEL[doc.expertise] : '', doc.status].filter(Boolean).join(' · ');
-              const statusChanged = previous && previous.status && previous.status !== doc.status;
+            {states.map((state) => {
+              const { doc } = state;
+              const previous = previousEnd ? stateAt(doc, previousEnd, cfg) : null;
+              const change = state.score && previous?.score ? round2(state.score.iikd - previous.score.iikd) : null;
+              const versions = expanded === doc.key ? history(doc, cfg) : [];
+              const details = [
+                doc.startDate ? `с ${formatDate(doc.startDate)}` : '',
+                state.expertise ? EXPERTISE_LABEL[state.expertise] : '',
+                state.status,
+              ].filter(Boolean).join(' · ');
+              // Замечания, отнесённые к показателю по умолчанию: категория в журнале не указана.
+              const uncategorized = doc.remarks.filter(
+                (r) => r.uncategorized && r.indicator && (state.asOf === null || (r.date ?? doc.startDate ?? '') <= state.asOf),
+              ).length;
+              const notes = [...state.missing.map((m) => MISSING_LABEL[m]), uncategorized > 0 ? `без категории: ${uncategorized}` : ''].filter(Boolean);
               return (
                 <>
-                  <tr key={doc.id}>
-                    <td class="nowrap">{doc.asOf ? formatDate(doc.asOf) : '—'}</td>
+                  <tr key={doc.key}>
                     <td>{doc.project || '—'}</td>
-                    <td>{doc.manager || '—'}</td>
+                    <td>{state.manager || '—'}</td>
                     <td class="wide">
-                      {doc.document}
-                      {details && <div class="muted small">{details}{statusChanged && ` (было: ${previous.status})`}</div>}
-                      {versions.length > 1 && (
-                        <button type="button" class="link small" onClick={() => setExpanded(expanded === doc.id ? null : doc.id)}>
-                          {expanded === doc.id ? 'Скрыть историю' : `История: версий ${versions.length}`}
+                      {doc.name}
+                      {details && <div class="muted small">{details}</div>}
+                      {doc.remarks.length > 0 && (
+                        <button type="button" class="link small" onClick={() => setExpanded(expanded === doc.key ? null : doc.key)}>
+                          {expanded === doc.key ? 'Скрыть историю' : 'История'}
                         </button>
                       )}
                     </td>
+                    <td class="num">{state.remarkCount}</td>
                     {INDICATOR_IDS.map((id) => (
-                      <IndicatorCell key={id} doc={doc} id={id} />
+                      <IndicatorCell key={id} state={state} id={id} />
                     ))}
-                    <td class="num"><Score doc={doc} /></td>
-                    <td class="num">{previous ? <Delta value={change} /> : <span class="muted">первая версия</span>}</td>
-                    <td class="muted">{doc.missing.map((m) => MISSING_LABEL[m]).join('; ')}</td>
+                    <td class="num"><Score state={state} /></td>
+                    <td class="num">
+                      {!previousEnd ? <span class="muted">—</span> : previous ? <Delta value={change} /> : <span class="muted">новый</span>}
+                    </td>
+                    <td class="muted">{notes.join('; ')}</td>
                   </tr>
-                  {expanded === doc.id &&
-                    versions.map((version) => (
-                      <tr key={`${doc.id}:${version.id}`} class="history">
-                        <td class="nowrap">{version.asOf ? formatDate(version.asOf) : '—'}</td>
-                        <td colSpan={2} class="muted small">{version.journalPath ?? version.registryPath ?? ''}</td>
-                        <td class="muted small">{version.status || '—'}{version.id === doc.id && ' · показана выше'}</td>
+                  {versions.map((version, index) => {
+                    const added = version.remarkCount - (versions[index - 1]?.remarkCount ?? 0);
+                    return (
+                      <tr key={`${doc.key}:${version.asOf}`} class="history">
+                        <td colSpan={2} class="nowrap">на {formatDate(version.asOf!)}</td>
+                        <td class="muted small">{version.status || '—'}</td>
+                        <td class="num">{version.remarkCount}{added > 0 && <span class="muted"> (+{added})</span>}</td>
                         {INDICATOR_IDS.map((id) => (
-                          <IndicatorCell key={id} doc={version} id={id} />
+                          <IndicatorCell key={id} state={version} id={id} />
                         ))}
-                        <td class="num"><Score doc={version} /></td>
+                        <td class="num"><Score state={version} /></td>
                         <td colSpan={2} />
                       </tr>
-                    ))}
+                    );
+                  })}
                 </>
               );
             })}
-            {documents.length === 0 && (
+            {states.length === 0 && (
               <tr><td colSpan={11} class="muted">Нет документов для выбранных условий.</td></tr>
             )}
           </tbody>

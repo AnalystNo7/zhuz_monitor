@@ -12,7 +12,8 @@ export type IndicatorId = 'design' | 'content' | 'repeats' | 'cycles';
 export type RemarkIndicator = Exclude<IndicatorId, 'cycles'>;
 
 export type Zone = 'green' | 'yellow' | 'red';
-export type RemarkStatus = 'accepted' | 'rejected' | 'unknown' | 'empty';
+/** `pending` — решение по замечанию ещё не принято («Новое»). */
+export type RemarkStatus = 'accepted' | 'rejected' | 'pending' | 'unknown' | 'empty';
 
 export type Granularity = 'month' | 'quarter';
 
@@ -21,6 +22,8 @@ export interface Period {
   /** Ключ для сортировки и группировки: `2026-Q3` или `2026-09`. */
   key: string;
   label: string;
+  /** Последний день периода, `ГГГГ-ММ-ДД`. */
+  end: string;
 }
 
 /** Вид экспертизы, по итогам которой заведён журнал. */
@@ -55,6 +58,10 @@ export interface Remark {
   status: RemarkStatus;
   /** Показатель, в который пошло замечание; `null` — в расчёте не участвует. */
   indicator: RemarkIndicator | null;
+  /** Категория не указана или не распознана; показатель назначен по умолчанию. */
+  uncategorized: boolean;
+  /** Сколько строк журнала с тем же текстом объединено в это замечание (1 — без повторов). */
+  copies: number;
   resolution: string;
   fileVersion: string;
 }
@@ -62,11 +69,17 @@ export interface Remark {
 export interface Journal {
   path: string;
   sheet: string;
+  /** Проект и документ журнала — по первому замечанию. */
+  project: string;
+  document: string;
+  /** Уникальные замечания. */
   remarks: Remark[];
+  /** Сколько строк с замечаниями было в журнале до объединения повторов. */
+  rowCount: number;
   issues: Issue[];
 }
 
-/** Строка расширенного Шаблона_1: паспорт документа от руководителя проекта. */
+/** Строка расширенного Шаблона_1: сведения о документе от руководителя проекта. */
 export interface RegistryRow {
   row: number;
   project: string;
@@ -110,33 +123,61 @@ export interface DocScore {
   zone: Zone;
 }
 
+/** Сведения о документе из перечня на дату его составления. */
+export interface Passport {
+  /** Дата перечня; `null`, если определить не удалось. */
+  asOf: string | null;
+  registryPath: string;
+  row: number;
+  project: string;
+  document: string;
+  manager: string;
+  developer: string;
+  status: string;
+  expertise: Expertise | null;
+  cycles: number | null;
+  pages: number | null;
+}
+
 /** Чего не хватило для полной оценки документа. */
 export type MissingPart = 'registry' | 'journal' | 'cycles' | 'date';
 
-export interface DocumentEval {
-  id: string;
-  /**
-   * Ключ документа, общий для всех его версий: проект, наименование и вид экспертизы.
-   * По нему версии, загруженные в разное время, собираются в историю.
-   */
-  docKey: string;
-  /** Дата версии, `ГГГГ-ММ-ДД`; `null`, если определить не удалось. */
-  asOf: string | null;
+/** Проектный документ: один журнал и сведения о нём из перечней. */
+export interface ProjectDocument {
+  /** Ключ документа: журнал, а для документа без журнала — проект, наименование и вид экспертизы. */
+  key: string;
   project: string;
+  name: string;
+  /**
+   * Точка отсчёта: дата первого замечания в журнале. Для документа без замечаний — дата перечня.
+   * `null`, если дату определить не удалось.
+   */
+  startDate: string | null;
+  /** Сведения из перечней от ранних к поздним; пусто, если документа нет ни в одном перечне. */
+  passports: Passport[];
+  journalPath: string | null;
+  /** Уникальные замечания журнала. */
+  remarks: Remark[];
+  /** `false`, если журнал указан в перечне, но не найден: оценить документ нельзя. */
+  evaluable: boolean;
+}
+
+/** Состояние документа на дату: учтены замечания, выданные не позже этой даты. */
+export interface DocumentState {
+  doc: ProjectDocument;
+  /** Дата состояния; `null` — по всем имеющимся данным. */
+  asOf: string | null;
   manager: string;
   developer: string;
-  document: string;
   status: string;
   expertise: Expertise | null;
-  pages: number | null;
-  registryPath: string | null;
-  journalPath: string | null;
+  /** Сколько уникальных замечаний выдано к этой дате (с любым статусом). */
+  remarkCount: number;
   /** Фактические значения; `cycles: null` — число циклов не указано. */
   facts: { design: number; content: number; repeats: number; cycles: number | null } | null;
   /** `null`, если документ оценить нельзя (нет ЖУЗ). */
   score: DocScore | null;
   missing: MissingPart[];
-  remarks: Remark[];
 }
 
 export interface FileReport {
@@ -146,7 +187,7 @@ export interface FileReport {
 }
 
 export interface Evaluation {
-  documents: DocumentEval[];
+  documents: ProjectDocument[];
   files: FileReport[];
   issues: Issue[];
 }

@@ -31,7 +31,16 @@ export interface Config {
   zones: { green: number; yellow: number };
   acceptedStatuses: string[];
   rejectedStatuses: string[];
+  /** Статусы замечаний, по которым решение ещё не принято: в расчёт не идут. */
+  pendingStatuses: string[];
   categories: CategoryConfig[];
+  /**
+   * Показатель для принятого замечания, у которого категория не указана или не распознана.
+   * `null` — такие замечания не учитывать.
+   */
+  uncategorizedIndicator: RemarkIndicator | null;
+  /** Одинаковые по тексту замечания одного журнала считать одним: методика считает уникальные замечания. */
+  mergeDuplicateRemarks: boolean;
   /** Если у замечания несколько категорий, оно считается один раз — по первому показателю из списка. */
   indicatorPriority: RemarkIndicator[];
   /** Значения колонки «Файл ЖУЗ», означающие согласование без замечаний. */
@@ -50,6 +59,9 @@ export const DEFAULT_CONFIG: Config = {
   zones: { green: 90, yellow: 70 },
   acceptedStatuses: ['принято', 'согласовано с комментарием'],
   rejectedStatuses: ['отклонено'],
+  pendingStatuses: ['новое', 'в работе', 'на рассмотрении'],
+  uncategorizedIndicator: 'content',
+  mergeDuplicateRemarks: true,
   // Порядок важен: категория определяется по первому совпадению.
   categories: [
     {
@@ -59,10 +71,17 @@ export const DEFAULT_CONFIG: Config = {
       keywords: ['содержани', 'текстового', 'графического'],
     },
     {
+      id: 'content-functional',
+      title: 'Уточнение в части требований к функциональности',
+      indicator: 'content',
+      keywords: ['функциональност'],
+    },
+    {
       id: 'content-clarify',
       title: 'Уточнение / корректировка информации',
       indicator: 'content',
-      keywords: ['информаци'],
+      // Встречается и в сокращённом виде: «Уточнение».
+      keywords: ['информаци', 'уточнени'],
     },
     {
       id: 'content-terms',
@@ -75,12 +94,6 @@ export const DEFAULT_CONFIG: Config = {
       title: 'Корректировка с учетом положений / нормативных документов',
       indicator: 'content',
       keywords: ['нормативн', 'положени'],
-    },
-    {
-      id: 'content-functional',
-      title: 'Уточнение в части требований к функциональности',
-      indicator: 'content',
-      keywords: ['функциональност'],
     },
     {
       id: 'repeat',

@@ -36,7 +36,7 @@ export function remarkRow(r: RemarkInput): Cell[] {
     'Раздел 1',
     'Текст документа',
     null,
-    r.text ?? 'Текст замечания',
+    r.text ?? `Текст замечания ${r.number ?? 1}`,
     r.category === undefined ? 'Уточнение / корректировка информации' : r.category,
     r.status === undefined ? 'Принято' : r.status,
     'Исправлено',

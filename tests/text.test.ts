@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bucketOf, dateFromTimestamp, fileKey, formatDate, norm, parseDate, parseReportingDate } from '../src/core/text.ts';
+import { bucketOf, dateFromTimestamp, fileKey, formatDate, nextPeriod, norm, parseDate, parseReportingDate } from '../src/core/text.ts';
 
 describe('даты', () => {
   it('порядковый номер дня Excel', () => {
@@ -50,10 +50,16 @@ describe('дата перечня документов', () => {
 
 describe('периоды', () => {
   it('квартал и месяц по дате', () => {
-    expect(bucketOf('2026-09-08', 'quarter')).toEqual({ key: '2026-Q3', label: '3 кв. 2026' });
-    expect(bucketOf('2026-09-08', 'month')).toEqual({ key: '2026-09', label: 'сентябрь 2026' });
+    expect(bucketOf('2026-09-08', 'quarter')).toEqual({ key: '2026-Q3', label: '3 кв. 2026', end: '2026-09-30' });
+    expect(bucketOf('2026-09-08', 'month')).toEqual({ key: '2026-09', label: 'сентябрь 2026', end: '2026-09-30' });
     expect(bucketOf('2026-12-31', 'quarter').key).toBe('2026-Q4');
     expect(bucketOf('2026-01-01', 'quarter').key).toBe('2026-Q1');
+    expect(bucketOf('2028-02-10', 'month').end).toBe('2028-02-29');
+  });
+  it('следующий период', () => {
+    expect(nextPeriod(bucketOf('2026-12-15', 'month'), 'month').key).toBe('2027-01');
+    expect(nextPeriod(bucketOf('2026-12-15', 'quarter'), 'quarter').key).toBe('2027-Q1');
+    expect(nextPeriod(bucketOf('2026-01-31', 'month'), 'month').key).toBe('2026-02');
   });
   it('оформление даты и дата из отметки времени файла', () => {
     expect(formatDate('2026-09-08')).toBe('08.09.2026');

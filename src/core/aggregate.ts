@@ -1,7 +1,7 @@
-import { INDICATOR_IDS } from './config.ts';
+import { INDICATOR_IDS, type Config } from './config.ts';
 import { round2 } from './score.ts';
-import { bucketOf } from './text.ts';
-import type { DocumentEval, Granularity, IndicatorId, Period, Zone } from './types.ts';
+import { listPeriods, statesAt } from './timeline.ts';
+import type { DocumentState, Granularity, IndicatorId, Period, ProjectDocument, Zone } from './types.ts';
 
 export interface Summary {
   /** Всего документов в выборке. */
@@ -32,55 +32,55 @@ function mean(values: number[]): number | null {
   return round2(values.reduce((sum, v) => sum + v, 0) / values.length);
 }
 
-export function summarize(documents: DocumentEval[]): Summary {
+export function summarize(states: DocumentState[]): Summary {
   const zones: Record<Zone, number> = { green: 0, yellow: 0, red: 0 };
   const values: number[] = [];
-  for (const doc of documents) {
-    if (!doc.score) continue;
-    zones[doc.score.zone] += 1;
-    values.push(doc.score.iikd);
+  for (const state of states) {
+    if (!state.score) continue;
+    zones[state.score.zone] += 1;
+    values.push(state.score.iikd);
   }
   return {
-    total: documents.length,
+    total: states.length,
     scored: values.length,
-    incomplete: documents.filter((d) => d.missing.length > 0).length,
+    incomplete: states.filter((s) => s.missing.length > 0).length,
     average: mean(values),
     zones,
   };
 }
 
-function indicatorSummary(documents: DocumentEval[], id: IndicatorId): IndicatorSummary {
+function indicatorSummary(states: DocumentState[], id: IndicatorId): IndicatorSummary {
   const scores: number[] = [];
   let failed = 0;
-  for (const doc of documents) {
-    if (!doc.score || !doc.facts) continue;
+  for (const state of states) {
+    if (!state.score || !state.facts) continue;
     // Неуказанное число циклов не штрафуется и в статистику показателя не идёт.
-    if (id === 'cycles' && doc.facts.cycles === null) continue;
-    const indicator = doc.score.indicators[id];
+    if (id === 'cycles' && state.facts.cycles === null) continue;
+    const indicator = state.score.indicators[id];
     scores.push(indicator.score);
     if (indicator.over > 0) failed += 1;
   }
   return { average: mean(scores), failed };
 }
 
-function describe(key: string, label: string, documents: DocumentEval[]): GroupSummary {
+function describe(key: string, label: string, states: DocumentState[]): GroupSummary {
   const indicators = {} as Record<IndicatorId, IndicatorSummary>;
-  for (const id of INDICATOR_IDS) indicators[id] = indicatorSummary(documents, id);
-  return { key, label, ...summarize(documents), indicators };
+  for (const id of INDICATOR_IDS) indicators[id] = indicatorSummary(states, id);
+  return { key, label, ...summarize(states), indicators };
 }
 
 export function groupBy(
-  documents: DocumentEval[],
-  keyOf: (doc: DocumentEval) => { key: string; label: string },
+  states: DocumentState[],
+  keyOf: (state: DocumentState) => { key: string; label: string },
 ): GroupSummary[] {
-  const groups = new Map<string, { label: string; docs: DocumentEval[] }>();
-  for (const doc of documents) {
-    const { key, label } = keyOf(doc);
-    const group = groups.get(key) ?? { label, docs: [] };
-    group.docs.push(doc);
+  const groups = new Map<string, { label: string; states: DocumentState[] }>();
+  for (const state of states) {
+    const { key, label } = keyOf(state);
+    const group = groups.get(key) ?? { label, states: [] };
+    group.states.push(state);
     groups.set(key, group);
   }
-  return [...groups].map(([key, { label, docs }]) => describe(key, label, docs));
+  return [...groups].map(([key, group]) => describe(key, group.label, group.states));
 }
 
 /** От лучшего среднего к худшему; группы без оценок — в конце. */
@@ -90,73 +90,36 @@ function byAverageDesc(a: GroupSummary, b: GroupSummary): number {
 }
 
 /** Рейтинг руководителей проектов и данные для матрицы уязвимостей. */
-export function byManager(documents: DocumentEval[]): GroupSummary[] {
-  return groupBy(documents, (d) => {
-    const label = d.manager || 'РП не указан';
+export function byManager(states: DocumentState[]): GroupSummary[] {
+  return groupBy(states, (s) => {
+    const label = s.manager || 'РП не указан';
     return { key: label.toLowerCase(), label };
   }).sort(byAverageDesc);
 }
 
-export function byProject(documents: DocumentEval[]): GroupSummary[] {
-  return groupBy(documents, (d) => {
-    const label = d.project || 'Проект не указан';
+export function byProject(states: DocumentState[]): GroupSummary[] {
+  return groupBy(states, (s) => {
+    const label = s.doc.project || 'Проект не указан';
     return { key: label.toLowerCase(), label };
   }).sort(byAverageDesc);
 }
 
-/* ---------- Версии документа во времени ---------- */
-
-/** Порядок версий: по дате, версии без даты — самые ранние. */
-function byVersionOrder(a: DocumentEval, b: DocumentEval): number {
-  return (a.asOf ?? '').localeCompare(b.asOf ?? '') || a.id.localeCompare(b.id);
-}
-
-/** История каждого документа: все его версии от ранней к поздней. */
-export function buildHistories(documents: DocumentEval[]): Map<string, DocumentEval[]> {
-  const histories = new Map<string, DocumentEval[]>();
-  for (const doc of documents) histories.set(doc.docKey, [...(histories.get(doc.docKey) ?? []), doc]);
-  for (const versions of histories.values()) versions.sort(byVersionOrder);
-  return histories;
-}
-
-/** Последняя версия каждого документа из набора. */
-export function latestVersions(documents: DocumentEval[]): DocumentEval[] {
-  const latest = new Map<string, DocumentEval>();
-  for (const doc of [...documents].sort(byVersionOrder)) latest.set(doc.docKey, doc);
-  // Порядок вывода — как в исходном наборе.
-  const keep = new Set([...latest.values()].map((d) => d.id));
-  return documents.filter((d) => keep.has(d.id));
-}
-
-/** Версия того же документа, непосредственно предшествующая данной. */
-export function previousVersion(doc: DocumentEval, histories: Map<string, DocumentEval[]>): DocumentEval | null {
-  const versions = histories.get(doc.docKey) ?? [];
-  const index = versions.findIndex((v) => v.id === doc.id);
-  return index > 0 ? versions[index - 1]! : null;
-}
-
-/** Периоды выбранной детализации, в которые попадают версии документов. */
-export function listPeriods(documents: DocumentEval[], granularity: Granularity): Period[] {
-  const periods = new Map<string, Period>();
-  for (const doc of documents) {
-    if (!doc.asOf) continue;
-    const period = bucketOf(doc.asOf, granularity);
-    periods.set(period.key, period);
-  }
-  return [...periods.values()].sort((a, b) => a.key.localeCompare(b.key));
+export interface TrendPoint extends GroupSummary {
+  period: Period;
 }
 
 /**
- * Состояние на период: по каждому документу — последняя версия, загруженная в этом периоде.
- * Документы без версий в периоде в него не попадают.
+ * Динамика нарастающим итогом: на конец каждого периода — состояние всех документов,
+ * начатых к этому моменту. `filter` отбирает состояния (например, по статусу документа).
  */
-export function documentsInPeriod(documents: DocumentEval[], granularity: Granularity, periodKey: string): DocumentEval[] {
-  return latestVersions(documents.filter((d) => d.asOf !== null && bucketOf(d.asOf, granularity).key === periodKey));
-}
-
-/** Динамика по периодам в хронологическом порядке. */
-export function trend(documents: DocumentEval[], granularity: Granularity): GroupSummary[] {
-  return listPeriods(documents, granularity).map((period) =>
-    describe(period.key, period.label, documentsInPeriod(documents, granularity, period.key)),
-  );
+export function trend(
+  documents: ProjectDocument[],
+  granularity: Granularity,
+  cfg: Config,
+  filter: (state: DocumentState) => boolean = () => true,
+): TrendPoint[] {
+  return listPeriods(documents, granularity).map((period) => ({
+    period,
+    ...describe(period.key, period.label, statesAt(documents, period.end, cfg).filter(filter)),
+  }));
 }
