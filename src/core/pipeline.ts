@@ -28,6 +28,63 @@ function baseName(path: string): string {
   return (path.split('/').pop() ?? path).replace(/\.(xlsx|xlsm)$/i, '');
 }
 
+/** Какая доля журнала `older` уже есть в журнале `newer`, чтобы считать его ранней копией. */
+const COPY_SHARE = 0.8;
+
+/** Доля замечаний журнала `older`, тексты которых есть в журнале `newer`. */
+function containedShare(older: Journal, newer: Journal): number {
+  const texts = new Set(newer.remarks.map((r) => norm(r.text)).filter(Boolean));
+  const own = older.remarks.map((r) => norm(r.text)).filter(Boolean);
+  if (own.length === 0) return 1;
+  return own.filter((t) => texts.has(t)).length / own.length;
+}
+
+function lastSegment(path: string): string {
+  return path.split(/[\\/]/).map((s) => s.trim()).filter(Boolean).pop() ?? '';
+}
+
+/**
+ * Подписи версий для документов проекта с одинаковым наименованием: последняя папка
+ * из ссылки в перечне, иначе имя файла журнала. Если подписи совпадают — добавляется номер.
+ */
+function assignVariants(documents: ProjectDocument[]): void {
+  const groups = new Map<string, ProjectDocument[]>();
+  for (const doc of documents) {
+    const key = pairKey(doc.project, doc.name);
+    groups.set(key, [...(groups.get(key) ?? []), doc]);
+  }
+  const sources = [
+    (doc: ProjectDocument) => lastSegment(doc.passports[doc.passports.length - 1]?.folderLink ?? ''),
+    (doc: ProjectDocument) => (doc.journalPath ? baseName(doc.journalPath) : ''),
+  ];
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    group.sort((a, b) => (a.startDate ?? '').localeCompare(b.startDate ?? '') || a.key.localeCompare(b.key));
+    const distinct = sources.find((source) => {
+      const labels = group.map(source);
+      return labels.every(Boolean) && new Set(labels.map((l) => norm(l))).size === labels.length;
+    });
+    if (distinct) {
+      for (const doc of group) doc.variant = distinct(doc);
+      continue;
+    }
+    const base = group.map((doc) => sources.map((source) => source(doc)).find(Boolean) ?? '');
+    const total = new Map<string, number>();
+    for (const label of base) total.set(norm(label), (total.get(norm(label)) ?? 0) + 1);
+    const counter = new Map<string, number>();
+    group.forEach((doc, i) => {
+      const label = base[i]!;
+      if (label && total.get(norm(label)) === 1) {
+        doc.variant = label;
+        return;
+      }
+      const n = (counter.get(norm(label)) ?? 0) + 1;
+      counter.set(norm(label), n);
+      doc.variant = label ? `${label} №${n}` : `№${n}`;
+    });
+  }
+}
+
 /** Связка «проект — документ»: у каждого документа проекта один журнал. */
 export function pairKey(project: string, document: string): string {
   return `${norm(project)}|${norm(document)}`;
@@ -121,8 +178,9 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
     });
   }
 
-  // Журнал документа один и только пополняется. Если в папке лежит несколько его копий,
-  // актуальной считается самая полная, остальные — более ранние версии.
+  // Журнал документа один и только пополняется. Если в папке несколько журналов с той же связкой
+  // «проект — документ», журнал, чьи замечания почти все есть в более полном, — его ранняя копия.
+  // Журнал с другими замечаниями относится к другой версии документа (например, по другому заказу).
   const identityOf = (journal: Journal): string =>
     journal.project || journal.document ? pairKey(journal.project, journal.document) : `file:${journal.path}`;
   const fuller = (a: Journal, b: Journal): number =>
@@ -131,30 +189,44 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
     (fileDates.get(b.path) ?? '').localeCompare(fileDates.get(a.path) ?? '') ||
     a.path.localeCompare(b.path);
 
-  const copies = new Map<string, Journal[]>();
+  const byIdentity = new Map<string, Journal[]>();
   for (const journal of journals.values()) {
     if (journal.remarks.length === 0) {
       files.push({ path: journal.path, kind: 'skipped', note: 'ЖУЗ без замечаний — пропущен.' });
       continue;
     }
     const identity = identityOf(journal);
-    copies.set(identity, [...(copies.get(identity) ?? []), journal]);
+    byIdentity.set(identity, [...(byIdentity.get(identity) ?? []), journal]);
   }
 
-  const actual = new Map<string, Journal>(); // связка «проект — документ» → актуальный журнал
+  const actualByPair = new Map<string, Journal[]>(); // связка «проект — документ» → актуальные журналы версий
   const actualOf = new Map<string, Journal>(); // путь любой копии → актуальный журнал
-  for (const [identity, group] of copies) {
-    group.sort(fuller);
-    const [primary, ...older] = group as [Journal, ...Journal[]];
-    actual.set(identity, primary);
-    actualOf.set(primary.path, primary);
-    issues.push(...primary.issues);
-    for (const copy of older) {
-      actualOf.set(copy.path, primary);
-      files.push({
-        path: copy.path,
-        kind: 'skipped',
-        note: `Более ранняя копия журнала (замечаний ${copy.remarks.length}, в актуальной — ${primary.remarks.length}): не учитывается. Актуальная: ${primary.path}`,
+  for (const [identity, group] of byIdentity) {
+    const versions: { primary: Journal; older: Journal[] }[] = [];
+    for (const journal of [...group].sort(fuller)) {
+      const version = versions.find((v) => containedShare(journal, v.primary) >= COPY_SHARE);
+      if (version) version.older.push(journal);
+      else versions.push({ primary: journal, older: [] });
+    }
+    actualByPair.set(identity, versions.map((v) => v.primary));
+    for (const { primary, older } of versions) {
+      actualOf.set(primary.path, primary);
+      issues.push(...primary.issues);
+      for (const copy of older) {
+        actualOf.set(copy.path, primary);
+        files.push({
+          path: copy.path,
+          kind: 'skipped',
+          note: `Более ранняя копия журнала (замечаний ${copy.remarks.length}, в актуальной — ${primary.remarks.length}): не учитывается. Актуальная: ${primary.path}`,
+        });
+      }
+    }
+    if (versions.length > 1) {
+      const sample = versions[0]!.primary;
+      issues.push({
+        level: 'info',
+        file: sample.path,
+        message: `Журналов документа «${sample.document}» проекта «${sample.project}» с разными замечаниями: ${versions.length}. Они считаются разными версиями документа.`,
       });
     }
   }
@@ -164,6 +236,13 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
     const key = fileKey(path);
     byName.set(key, [...(byName.get(key) ?? []), journals.get(path)!]);
   }
+  /** Из нескольких журналов — ближайший к перечню по дереву папок; `ambiguous`, если таких несколько. */
+  const closest = (candidates: Journal[], registryPath: string): { journal: Journal | null; ambiguous: boolean } => {
+    const ranked = candidates
+      .map((journal) => ({ journal, distance: folderDistance(journal.path, registryPath) }))
+      .sort((a, b) => a.distance - b.distance);
+    return { journal: ranked[0]?.journal ?? null, ambiguous: ranked.length > 1 && ranked[1]!.distance === ranked[0]!.distance };
+  };
   /** Журнал по имени файла; из одноимённых — ближайший к перечню по дереву папок. */
   const findByName = (name: string, registryPath: string): Journal | null => {
     const ranked = (byName.get(fileKey(name)) ?? [])
@@ -210,7 +289,11 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
 
       let journal: Journal | null = null;
       if (!noRemarks) {
-        const byPair = actual.get(pairKey(row.project, row.document)) ?? null;
+        const pair = closest(actualByPair.get(pairKey(row.project, row.document)) ?? [], registry.path);
+        const byPair = pair.journal;
+        if (!marker && pair.ambiguous) {
+          issues.push({ level: 'warning', ...where, message: `«${row.document}»: журналов с таким проектом и документом несколько (версии документа). Укажите в перечне имя файла ЖУЗ.` });
+        }
         if (marker) {
           journal = findByName(row.journalFile, registry.path) ?? byPair;
           if (!journal) {
@@ -224,8 +307,9 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
         }
       }
 
-      // Документ определяется своим журналом; без журнала — связкой «проект — документ».
-      let key = journal ? `journal:${identityOf(journal)}` : `row:${pairKey(row.project, row.document)}`;
+      // Документ определяется своим журналом; без журнала — связкой «проект — документ» и папкой:
+      // одноимённые документы в разных папках — разные версии (например, по разным заказам).
+      let key = journal ? `journal:${journal.path}` : `row:${pairKey(row.project, row.document)}|${norm(row.folderLink)}`;
       const occurrence = (seen.get(key) ?? 0) + 1;
       seen.set(key, occurrence);
       if (occurrence > 1) {
@@ -233,7 +317,13 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
           issues.push({ level: 'warning', ...where, message: `«${row.document}»: на журнал ${journal.path} ссылается несколько строк перечня. У каждого документа должен быть свой ЖУЗ.` });
         } else {
           if (occurrence === 2) {
-            issues.push({ level: 'warning', ...where, message: `В перечне несколько строк «${row.document}» с одинаковым проектом. Наименование документа в проекте должно быть уникальным.` });
+            issues.push({
+              level: 'warning',
+              ...where,
+              message:
+                `В перечне несколько строк «${row.document}» с одинаковыми проектом и папкой. Если это разные версии документа, ` +
+                'укажите версию в наименовании (например, «…, версия 2») или разные ссылки на папку.',
+            });
           }
           key = `${key}#${occurrence}`;
         }
@@ -251,6 +341,7 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
         manager: row.manager,
         developer: row.developer,
         status: row.status,
+        folderLink: row.folderLink,
         cycles: row.cycles,
         pages: row.pages,
       });
@@ -259,7 +350,7 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
 
   // Журналы, которых нет ни в одном перечне.
   const linked = new Set([...drafts.values()].map((d) => d.journal?.path).filter(Boolean));
-  for (const journal of actual.values()) {
+  for (const journal of [...actualByPair.values()].flat()) {
     const inRegistry = linked.has(journal.path);
     const duplicates = journal.rowCount - journal.remarks.length;
     files.push({
@@ -270,7 +361,7 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
         (duplicates > 0 ? ` (строк ${journal.rowCount}, повторы объединены)` : '') +
         (inRegistry ? '' : '; в перечне документов не указан'),
     });
-    if (!inRegistry) draftFor(`journal:${identityOf(journal)}`, journal);
+    if (!inRegistry) draftFor(`journal:${journal.path}`, journal);
   }
 
   const documents: ProjectDocument[] = [...drafts.values()].map((draft) => {
@@ -284,6 +375,7 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
       key: draft.key,
       project: latest?.project || journal?.project || '',
       name: latest?.document || journal?.document || (journal ? baseName(journal.path) : ''),
+      variant: '',
       manager,
       managerSource: manager ? ('registry' as const) : null,
       // Точка отсчёта — первое замечание; для документа без замечаний — дата перечня.
@@ -297,7 +389,14 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
     };
   });
 
-  documents.sort((a, b) => a.project.localeCompare(b.project, 'ru') || a.name.localeCompare(b.name, 'ru') || a.key.localeCompare(b.key));
+  assignVariants(documents);
+  documents.sort(
+    (a, b) =>
+      a.project.localeCompare(b.project, 'ru') ||
+      a.name.localeCompare(b.name, 'ru') ||
+      a.variant.localeCompare(b.variant, 'ru', { numeric: true }) ||
+      a.key.localeCompare(b.key),
+  );
   // Ручной ввод: если файлов несколько, более поздний дополняет и переопределяет ранние.
   const manual = emptyManualData();
   const ordered = [...manualFiles.values()].sort((a, b) => a.modified - b.modified || a.path.localeCompare(b.path));

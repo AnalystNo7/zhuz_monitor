@@ -22,6 +22,11 @@ export function documentKey(project: string, document: string): string {
   return `${norm(project)}|${norm(document)}`;
 }
 
+/** Наименование документа с версией, если в проекте есть одноимённые документы. */
+export function documentTitle(doc: { name: string; variant: string }): string {
+  return doc.variant ? `${doc.name} (${doc.variant})` : doc.name;
+}
+
 export function emptyManualData(): ManualData {
   return { managers: new Map(), documents: new Map() };
 }
@@ -113,7 +118,7 @@ export function applyManual(documents: ProjectDocument[], data: ManualData): Pro
   if (data.managers.size === 0 && data.documents.size === 0) return documents;
   return documents.map((doc) => {
     const manager = data.managers.get(projectKey(doc.project))?.manager.trim();
-    const override = data.documents.get(documentKey(doc.project, doc.name)) ?? null;
+    const override = data.documents.get(documentKey(doc.project, documentTitle(doc))) ?? null;
     if (!manager && !override) return doc;
     return {
       ...doc,

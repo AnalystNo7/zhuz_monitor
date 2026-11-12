@@ -169,6 +169,8 @@ export interface Passport {
   manager: string;
   developer: string;
   status: string;
+  /** Ссылка на папку документа: по ней различаются одноимённые версии документа. */
+  folderLink: string;
   cycles: number | null;
   pages: number | null;
 }
@@ -186,6 +188,12 @@ export interface ProjectDocument {
   key: string;
   project: string;
   name: string;
+  /**
+   * Версия документа, если в проекте несколько документов с тем же наименованием
+   * (например, по разным заказам): последняя папка из ссылки, имя файла журнала или номер.
+   * Пусто, если наименование в проекте уникально.
+   */
+  variant: string;
   /** РП из перечня документов; назначение вручную подставляется отдельно. */
   manager: string;
   /** Откуда взят РП. */

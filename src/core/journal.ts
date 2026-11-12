@@ -280,6 +280,8 @@ export function parseJournal(sheet: SheetData, path: string, cfg: Config): Journ
 
   // Показатель назначается после объединения: у повтора категория может быть указана только в одной из строк.
   const uncategorizedRows: number[] = [];
+  /** Непринятые замечания без категории: на расчёт не влияют, но если их примут — журнал перестанет рассчитываться. */
+  const uncategorizedOther: number[] = [];
   const unknownCategory = new Map<string, number[]>();
   const unknownStatus = new Map<string, number[]>();
   const noStatus: number[] = [];
@@ -291,9 +293,10 @@ export function parseJournal(sheet: SheetData, path: string, cfg: Config): Journ
     if (draft.status === 'pending') pending += 1;
     if (draft.status === 'empty') noStatus.push(...draft.rows);
     if (draft.status === 'unknown') unknownStatus.set(draft.statusRaw, [...(unknownStatus.get(draft.statusRaw) ?? []), ...draft.rows]);
-    if (draft.status !== 'accepted') continue;
 
-    if (draft.categories.length > 0) {
+    if (draft.status !== 'accepted') {
+      if (draft.categories.length === 0) uncategorizedOther.push(...draft.rows);
+    } else if (draft.categories.length > 0) {
       draft.indicator = pickIndicator(draft.indicators, cfg);
     } else {
       draft.uncategorized = true;
@@ -309,6 +312,13 @@ export function parseJournal(sheet: SheetData, path: string, cfg: Config): Journ
       'error',
       'ЖУЗ не рассчитан: у принятых замечаний не указана категория или её нет в справочнике. ' +
         `Укажите категорию и обновите данные. Строки: ${rowList(uncategorizedRows)}.`,
+    );
+  }
+  if (uncategorizedOther.length > 0) {
+    note(
+      'warning',
+      'У непринятых замечаний (отклонённых, новых, без статуса) не указана категория или её нет в справочнике. ' +
+        `На расчёт это не влияет, но категорию нужно указать. Строки: ${rowList(uncategorizedOther)}.`,
     );
   }
   for (const [fragment, rows] of unknownCategory) {

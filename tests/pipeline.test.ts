@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CONFIG as cfg } from '../src/core/config.ts';
 import { evaluate, type InputWorkbook } from '../src/core/pipeline.ts';
-import { manualSheets } from '../src/core/manual.ts';
+import { applyManual, documentKey, documentTitle, manualSheets } from '../src/core/manual.ts';
 import { stateAt } from '../src/core/timeline.ts';
 import type { ProjectDocument } from '../src/core/types.ts';
 import { journalSheet, registrySheet, type RemarkInput } from './helpers.ts';
@@ -286,5 +286,98 @@ describe('файл ручного ввода в папке', () => {
     expect([...result.manual.managers.values()].map((a) => a.manager)).toEqual(['Новый', 'Сидорова А.']);
     expect(result.manualPath).toBe('a.xlsx');
     expect(result.issues).toEqual([expect.objectContaining({ level: 'warning', file: 'a.xlsx' })]);
+  });
+});
+
+describe('версии документа с одинаковым наименованием', () => {
+  const guide = 'Руководство пользователя (актуализация)';
+
+  it('строки перечня в разных папках — разные версии, подпись — последняя папка', () => {
+    const result = evaluate([
+      {
+        path: 'Перечень.xlsx',
+        sheets: [registrySheet([
+          { project: 'СУП', document: guide, folder: 'S:\\Качество ПД\\СУП\\заказ 4.1', cycles: 1, journalFile: 'без замечаний' },
+          { project: 'СУП', document: guide, folder: 'S:\\Качество ПД\\СУП\\заказ 2.5\\этап 2', cycles: 1, journalFile: 'без замечаний' },
+          { project: 'СУП', document: 'Протокол испытаний', folder: 'S:\\Качество ПД\\СУП\\заказ 4.1', cycles: 1, journalFile: 'без замечаний' },
+        ])],
+      },
+    ]);
+    expect(result.documents.map((d) => [d.name, d.variant])).toEqual([
+      ['Протокол испытаний', ''],
+      [guide, 'заказ 4.1'],
+      [guide, 'этап 2'],
+    ]);
+    expect(result.issues).toEqual([]);
+  });
+
+  it('одинаковые наименование и папка — предупреждение и номера', () => {
+    const result = evaluate([
+      {
+        path: 'Перечень.xlsx',
+        sheets: [registrySheet([
+          { project: 'СУП', document: guide, folder: 'S:\\СУП\\заказ 4.1', cycles: 1, journalFile: 'без замечаний' },
+          { project: 'СУП', document: guide, folder: 'S:\\СУП\\заказ 4.1', cycles: 1, journalFile: 'без замечаний' },
+          { project: 'СУП', document: guide, folder: 'S:\\СУП\\заказ 2.5\\этап 2', cycles: 1, journalFile: 'без замечаний' },
+        ])],
+      },
+    ]);
+    expect(result.documents.map((d) => d.variant)).toEqual(['заказ 4.1 №1', 'заказ 4.1 №2', 'этап 2']);
+    expect(result.issues).toEqual([expect.objectContaining({ level: 'warning', row: 5, message: expect.stringContaining('версия 2') })]);
+  });
+
+  it('журналы с той же связкой, но с разными замечаниями — разные версии, а не копии', () => {
+    const first = Array.from({ length: 4 }, (_, i) => ({ text: `Замечание к заказу 4.1 № ${i}`, document: guide }));
+    const second = Array.from({ length: 6 }, (_, i) => ({ text: `Замечание к заказу 2.5 № ${i}`, document: guide }));
+    const result = evaluate([
+      { path: 'заказ 4.1/ЖУЗ_РП.xlsx', sheets: [journalSheet(first)] },
+      { path: 'заказ 2.5/ЖУЗ_РП.xlsx', sheets: [journalSheet(second)] },
+    ]);
+    expect(result.documents.map((d) => [d.journalPath, d.remarks.length]).sort()).toEqual([
+      ['заказ 2.5/ЖУЗ_РП.xlsx', 6],
+      ['заказ 4.1/ЖУЗ_РП.xlsx', 4],
+    ]);
+    // Имена файлов совпадают, поэтому к подписи добавляется номер.
+    expect(result.documents.map((d) => d.variant).sort()).toEqual(['ЖУЗ_РП №1', 'ЖУЗ_РП №2']);
+    expect(result.files.every((f) => f.kind === 'journal')).toBe(true);
+    expect(result.issues).toEqual([expect.objectContaining({ level: 'info', message: expect.stringContaining('разными версиями') })]);
+  });
+
+  it('журнал, чьи замечания почти все есть в более полном, — ранняя копия', () => {
+    const early = Array.from({ length: 5 }, (_, i) => ({ text: `Замечание ${i}` }));
+    // В актуальной копии одно из ранних замечаний переформулировано: совпадают 4 из 5.
+    const actual = [
+      ...early.slice(0, 4),
+      { text: 'Замечание 4, исправленная формулировка' },
+      ...Array.from({ length: 6 }, (_, i) => ({ text: `Новое ${i}` })),
+    ];
+    const result = evaluate([
+      { path: 'Архив/ЖУЗ.xlsx', sheets: [journalSheet(early)] },
+      { path: 'ЖУЗ.xlsx', sheets: [journalSheet(actual)] },
+    ]);
+    expect(result.documents).toHaveLength(1);
+    expect(result.documents[0]).toMatchObject({ journalPath: 'ЖУЗ.xlsx', variant: '' });
+    expect(result.files.find((f) => f.path === 'Архив/ЖУЗ.xlsx')?.kind).toBe('skipped');
+  });
+
+  it('ручной ввод различает версии по подписи', () => {
+    const { documents } = evaluate([
+      {
+        path: 'Перечень.xlsx',
+        sheets: [registrySheet([
+          { project: 'СУП', document: guide, folder: 'S:\\СУП\\заказ 4.1', journalFile: 'без замечаний' },
+          { project: 'СУП', document: guide, folder: 'S:\\СУП\\заказ 5.1', journalFile: 'без замечаний' },
+        ])],
+      },
+    ]);
+    const title = `${guide} (заказ 5.1)`;
+    const applied = applyManual(documents, {
+      managers: new Map(),
+      documents: new Map([[documentKey('СУП', title), { project: 'СУП', document: title, status: 'На доработке', cycles: null, updated: null }]]),
+    });
+    expect(applied.map((d) => [documentTitle(d), d.manual?.status ?? ''])).toEqual([
+      [`${guide} (заказ 4.1)`, ''],
+      [title, 'На доработке'],
+    ]);
   });
 });

@@ -1,4 +1,4 @@
-import { documentKey, MANUAL_FILE_NAME, projectKey } from '../core/manual.ts';
+import { documentKey, documentTitle, MANUAL_FILE_NAME, projectKey } from '../core/manual.ts';
 import { norm } from '../core/text.ts';
 import type { DocumentState, ManualData } from '../core/types.ts';
 
@@ -29,10 +29,11 @@ export function manualRows(states: DocumentState[]): ProjectGroup[] {
     const key = projectKey(doc.project);
     const group = groups.get(key) ?? { key, project: doc.project || 'Проект не указан', registryManager: '', documents: [] };
     if (doc.managerSource === 'registry' && !group.registryManager) group.registryManager = doc.manager;
+    const title = documentTitle(doc);
     group.documents.push({
-      key: documentKey(doc.project, doc.name),
+      key: documentKey(doc.project, title),
       project: doc.project,
-      document: doc.name,
+      document: title,
       registryStatus: state.status,
       autoCycles: state.cycles,
       autoCyclesSource: state.cyclesSource === 'registry' ? 'registry' : 'journal',

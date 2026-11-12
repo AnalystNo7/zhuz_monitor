@@ -99,11 +99,26 @@ describe('разбор журнала учёта замечаний', () => {
       [null, false],
       [null, false],
     ]);
-    // Отклонённое замечание без категории на расчёт не влияет и расчёт не блокирует.
+    // Отклонённое замечание без категории расчёт не блокирует, но о нём предупреждаем.
     expect(journal.uncategorizedRows).toEqual([3, 4]);
     expect(journal.issues.map((i) => [i.level, i.message])).toEqual([
       ['error', 'ЖУЗ не рассчитан: у принятых замечаний не указана категория или её нет в справочнике. Укажите категорию и обновите данные. Строки: 3, 4.'],
+      ['warning', 'У непринятых замечаний (отклонённых, новых, без статуса) не указана категория или её нет в справочнике. На расчёт это не влияет, но категорию нужно указать. Строки: 6.'],
       ['warning', 'Категория «новая категория» отсутствует в справочнике. Строки: 4.'],
+    ]);
+  });
+
+  it('непринятые замечания без категории — только предупреждение', () => {
+    const journal = parseJournal(
+      journalSheet([{}, { category: null, status: 'Отклонено' }, { category: null, status: 'Новое' }, { category: 'Нечто', status: 'Отклонено' }]),
+      'ЖУЗ.xlsx',
+      cfg,
+    )!;
+    expect(journal.uncategorizedRows).toEqual([]);
+    expect(journal.remarks[0]!.indicator).toBe('content');
+    expect(journal.issues.filter((i) => i.level !== 'info').map((i) => [i.level, /Строки: [\d, ]+/.exec(i.message)?.[0]])).toEqual([
+      ['warning', 'Строки: 4, 5, 6'],
+      ['warning', 'Строки: 6'],
     ]);
   });
 

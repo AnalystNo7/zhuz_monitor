@@ -415,7 +415,9 @@ function DocumentsTable({ states, previousEnd }: { states: DocumentState[]; prev
               const previous = previousEnd ? stateAt(doc, previousEnd, cfg) : null;
               const change = state.score && previous?.score ? round2(state.score.iikd - previous.score.iikd) : null;
               const versions = expanded === doc.key ? history(doc, cfg) : [];
-              const details = [doc.startDate ? `с ${formatDate(doc.startDate)}` : '', state.status].filter(Boolean).join(' · ');
+              const details = [doc.variant ? `версия: ${doc.variant}` : '', doc.startDate ? `с ${formatDate(doc.startDate)}` : '', state.status]
+                .filter(Boolean)
+                .join(' · ');
               return (
                 <>
                   <tr key={doc.key}>
