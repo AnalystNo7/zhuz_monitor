@@ -1,14 +1,15 @@
 // Генерирует демонстрационную папку samples/demo с вымышленными данными.
 // Один журнал на документ; журналы пополнялись в разные месяцы, поэтому видна
 // динамика, а циклы согласования оцениваются по датам замечаний.
-// Перечень документов ведёт только РП проекта «Альфа»; РП проекта «Бета» назначен
-// в файле «РП по проектам.xlsx», у проекта «Гамма» РП не назначен. В одном журнале
-// есть принятые замечания без категории — такой документ не рассчитывается.
+// Перечень документов ведёт только РП проекта «Альфа». Остальное задано в файле ручного
+// ввода: РП проекта «Бета», статусы и циклы части документов; у проекта «Гамма» РП
+// не назначен. В одном журнале есть принятые замечания без категории — такой документ
+// не рассчитывается.
 // В папке «Архив» лежат более ранний перечень и старая копия журнала.
 // Запуск: npm run samples
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { MANAGERS_FILE_NAME, MANAGERS_SHEET_NAME } from '../src/core/managers.ts';
+import { MANUAL_FILE_NAME, manualSheets } from '../src/core/manual.ts';
 import { writeWorkbook, type WriteCell } from '../src/io/xlsx-write.ts';
 
 const ROOT = 'samples/demo';
@@ -167,7 +168,16 @@ registry('Архив/Перечень документов Альфа (июнь)
   { doc: solution, status: 'На согласовании', cycles: 1, pages: 65 },
 ]);
 
-// Назначения РП, сохранённые из формы инструмента.
-write(MANAGERS_FILE_NAME, [{ name: MANAGERS_SHEET_NAME, rows: [['Проект', 'РП'], ['Бета', beta.manager]] }]);
+// Ручной ввод, сохранённый из формы инструмента.
+const override = (doc: Doc, status: string, cycles: number | null) =>
+  [`${doc.project}|${doc.name}`, { project: doc.project, document: doc.name, status, cycles, updated: '2026-10-01' }] as const;
+write(MANUAL_FILE_NAME, manualSheets({
+  managers: new Map([['бета', { project: beta.project, manager: beta.manager }]]),
+  documents: new Map([
+    override(userGuide, 'Согласован', null),
+    override(accessMatrix, 'На доработке', 4),
+    override(privateSpec, 'На согласовании', null),
+  ]),
+}));
 
 console.log(`Демонстрационные данные записаны в ${ROOT}`);

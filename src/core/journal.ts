@@ -1,6 +1,6 @@
 import { classifyCategories, classifyStatus, pickIndicator } from './classify.ts';
 import type { Config } from './config.ts';
-import { daysBetween, isBlank, norm, parseDate, str } from './text.ts';
+import { daysBetween, formatDate, isBlank, norm, parseDate, str } from './text.ts';
 import type { Cell, Issue, Journal, Remark, RemarkIndicator, RemarkStatus, SheetData } from './types.ts';
 
 type Column =
@@ -32,6 +32,8 @@ const HEADER_SEARCH_ROWS = 20;
 const ROWS_IN_MESSAGE = 12;
 /** Строка-разделитель вида «Цикл согласования 2». */
 const CYCLE_MARKER = /цикл согласования\s*№?\s*(\d+)/;
+/** Сколько строк подряд со значением, растущим на единицу, считать протягиванием ячейки в Excel. */
+const AUTOFILL_ROWS = 5;
 
 type ColumnMap = Partial<Record<Column, number>>;
 
@@ -80,6 +82,27 @@ function rowList(rows: number[]): string {
 /** Версия файла для сравнения: без регистра, расширения и точек в конце. */
 function versionKey(fileVersion: string): string {
   return norm(fileVersion).replace(/\.(docx?|xlsx?|pdf)$/, '').replace(/[.\s]+$/, '');
+}
+
+/**
+ * Участки из `AUTOFILL_ROWS` и более строк подряд, где значение в каждой следующей строке
+ * больше предыдущего ровно на единицу. Так бывает, когда ячейку протягивают мышью в Excel.
+ */
+function autofillRuns<T>(items: T[], isStep: (previous: T, next: T) => boolean): [T, T][] {
+  const runs: [T, T][] = [];
+  let start = 0;
+  for (let i = 1; i <= items.length; i++) {
+    if (i < items.length && isStep(items[i - 1]!, items[i]!)) continue;
+    if (i - start >= AUTOFILL_ROWS) runs.push([items[start]!, items[i - 1]!]);
+    start = i;
+  }
+  return runs;
+}
+
+/** Текст, оканчивающийся числом: «ПР_28.05» → [«ПР_28.», 5]. */
+function trailingNumber(text: string): [string, number] | null {
+  const match = /^(.*?)(\d+)\s*$/.exec(text);
+  return match ? [match[1]!, Number(match[2])] : null;
 }
 
 /** Строка журнала до объединения повторов и назначения показателя. */
@@ -225,6 +248,29 @@ export function parseJournal(sheet: SheetData, path: string, cfg: Config): Journ
 
   const issues: Issue[] = [];
   const note = (level: Issue['level'], message: string) => issues.push({ level, file: path, message });
+
+  // Протянутые даты и версии файла проверяются по исходным строкам, до объединения повторов.
+  for (const [first, last] of autofillRuns(drafts, (a, b) => a.date !== null && b.date !== null && daysBetween(a.date, b.date) === 1)) {
+    note(
+      'warning',
+      `Даты замечаний в строках ${first.row}–${last.row} растут ровно на день в каждой строке ` +
+        `(${formatDate(first.date!)} … ${formatDate(last.date!)}). Похоже на протягивание ячейки в Excel — проверьте даты: ` +
+        'от них зависят динамика и число циклов.',
+    );
+  }
+  const versionStep = (a: Draft, b: Draft) => {
+    const left = trailingNumber(a.fileVersion);
+    const right = trailingNumber(b.fileVersion);
+    return left !== null && right !== null && left[0] === right[0] && right[1] === left[1] + 1;
+  };
+  for (const [first, last] of autofillRuns(drafts, versionStep)) {
+    note(
+      'warning',
+      `Версия файла в строках ${first.row}–${last.row} отличается только числом, растущим на единицу ` +
+        `(«${first.fileVersion}» … «${last.fileVersion}»). Похоже на протягивание ячейки в Excel — проверьте версии: ` +
+        'по ним определяются циклы.',
+    );
+  }
 
   const merged = cfg.mergeDuplicateRemarks ? mergeDuplicates(drafts) : drafts;
   if (merged.length < drafts.length) {

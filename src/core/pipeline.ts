@@ -1,10 +1,10 @@
 import { DEFAULT_CONFIG, type Config } from './config.ts';
 import { parseJournal } from './journal.ts';
-import { parseManagers } from './managers.ts';
+import { emptyManualData, parseDocumentOverrides, parseManagers } from './manual.ts';
 import { parseRegistry } from './registry.ts';
 import { dateFromTimestamp, dirOf, fileKey, formatDate, norm } from './text.ts';
 import type {
-  Evaluation, FileReport, Issue, Journal, ManagerAssignments, Passport, ProjectDocument, Registry, SheetData,
+  DocumentOverride, Evaluation, FileReport, Issue, Journal, ManagerAssignments, Passport, ProjectDocument, Registry, SheetData,
 } from './types.ts';
 
 export interface InputWorkbook {
@@ -41,10 +41,12 @@ interface DocumentDraft {
   noRemarks: boolean;
 }
 
-interface ManagersFile {
+/** Книга ручного ввода: назначения РП и (или) статусы и циклы документов. */
+interface ManualFile {
   path: string;
   modified: number;
-  assignments: ManagerAssignments;
+  managers: ManagerAssignments;
+  documents: Map<string, DocumentOverride>;
 }
 
 /**
@@ -57,7 +59,14 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
   const files: FileReport[] = [];
   const issues: Issue[] = [];
   const fileDates = new Map<string, string>();
-  const managersFiles: ManagersFile[] = [];
+  const manualFiles = new Map<string, ManualFile>();
+  const manualFile = (workbook: InputWorkbook): ManualFile => {
+    const existing = manualFiles.get(workbook.path);
+    if (existing) return existing;
+    const created: ManualFile = { path: workbook.path, modified: workbook.modified ?? 0, managers: new Map(), documents: new Map() };
+    manualFiles.set(workbook.path, created);
+    return created;
+  };
 
   for (const workbook of workbooks) {
     if (typeof workbook.modified === 'number') fileDates.set(workbook.path, dateFromTimestamp(workbook.modified));
@@ -93,7 +102,13 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
       const assignments = parseManagers(sheet);
       if (assignments) {
         recognized = true;
-        managersFiles.push({ path: workbook.path, modified: workbook.modified ?? 0, assignments });
+        for (const [key, value] of assignments) manualFile(workbook).managers.set(key, value);
+        continue;
+      }
+      const overrides = parseDocumentOverrides(sheet);
+      if (overrides) {
+        recognized = true;
+        for (const [key, value] of overrides) manualFile(workbook).documents.set(key, value);
       }
     }
     if (recognized) continue;
@@ -278,26 +293,28 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
       remarks,
       journalMissing: journal === null && !draft.noRemarks,
       uncategorizedRows: journal?.uncategorizedRows ?? [],
+      manual: null,
     };
   });
 
   documents.sort((a, b) => a.project.localeCompare(b.project, 'ru') || a.name.localeCompare(b.name, 'ru') || a.key.localeCompare(b.key));
-  // Назначения РП: если файлов несколько, более поздний дополняет и переопределяет ранние.
-  const managers: ManagerAssignments = new Map();
-  managersFiles.sort((a, b) => a.modified - b.modified || a.path.localeCompare(b.path));
-  for (const file of managersFiles) {
-    for (const [key, value] of file.assignments) managers.set(key, value);
-    files.push({ path: file.path, kind: 'managers', note: `Назначения РП: проектов ${file.assignments.size}` });
+  // Ручной ввод: если файлов несколько, более поздний дополняет и переопределяет ранние.
+  const manual = emptyManualData();
+  const ordered = [...manualFiles.values()].sort((a, b) => a.modified - b.modified || a.path.localeCompare(b.path));
+  for (const file of ordered) {
+    for (const [key, value] of file.managers) manual.managers.set(key, value);
+    for (const [key, value] of file.documents) manual.documents.set(key, value);
+    files.push({ path: file.path, kind: 'manual', note: `Ручной ввод: РП проектов ${file.managers.size}, документов со статусом или циклами ${file.documents.size}` });
   }
-  if (managersFiles.length > 1) {
+  if (ordered.length > 1) {
     issues.push({
       level: 'warning',
-      file: managersFiles[managersFiles.length - 1]!.path,
-      message: `В папке ${managersFiles.length} файла с назначениями РП. При совпадении проектов действует файл, изменённый позже.`,
+      file: ordered[ordered.length - 1]!.path,
+      message: `В папке ${ordered.length} файла ручного ввода. При совпадении проектов и документов действует файл, изменённый позже.`,
     });
   }
 
   files.sort((a, b) => a.path.localeCompare(b.path, 'ru'));
-  return { documents, managers, managersPath: managersFiles[managersFiles.length - 1]?.path ?? null, files, issues };
+  return { documents, manual, manualPath: ordered[ordered.length - 1]?.path ?? null, files, issues };
 }
 

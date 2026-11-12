@@ -131,3 +131,8 @@ input.text {
 }
 input.text:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .form-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 10px; }
+
+table.manual tr.group td { background: var(--bg); }
+table.manual td.indent { padding-left: 28px; }
+table.manual select { width: 100%; min-width: 200px; padding: 5px 8px; }
+input.text.cycles { min-width: 0; width: 90px; }

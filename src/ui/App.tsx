@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { byManager, summarize, trend, type GroupSummary, type TrendPoint } from '../core/aggregate.ts';
 import { DEFAULT_CONFIG, INDICATOR_IDS } from '../core/config.ts';
-import { applyManagers, MANAGERS_FILE_NAME, MANAGERS_SHEET_NAME, managersRows } from '../core/managers.ts';
+import { applyManual, emptyManualData, MANUAL_FILE_NAME, manualSheets } from '../core/manual.ts';
 import { round2, zoneOf } from '../core/score.ts';
-import { formatDate, norm } from '../core/text.ts';
+import { dateFromTimestamp, formatDate, norm } from '../core/text.ts';
 import { history, listPeriods, stateAt, statesAt } from '../core/timeline.ts';
-import type { DocumentState, Evaluation, Granularity, IndicatorId, ManagerAssignments, MissingPart, Zone } from '../core/types.ts';
+import type { DocumentState, Evaluation, Granularity, IndicatorId, ManualData, MissingPart, Zone } from '../core/types.ts';
 import { canPickFolder, downloadFile, folderFromFileList, pickFolder, type SourceFolder } from '../io/folder.ts';
 import { writeWorkbook } from '../io/xlsx-write.ts';
 import { loadFolder } from './load.ts';
-import { ManagersForm, projectRows, type ProjectRow } from './ManagersForm.tsx';
+import { ManualForm, manualRows, type DocumentRow, type ProjectGroup } from './ManualForm.tsx';
 
 const cfg = DEFAULT_CONFIG;
 const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -21,6 +21,11 @@ const MISSING_LABEL: Record<MissingPart, string> = {
   date: 'дата начала не определена',
 };
 const LEVEL_LABEL = { error: 'Ошибка', warning: 'Внимание', info: 'К сведению' } as const;
+const CYCLES_SOURCE: Record<DocumentState['cyclesSource'], string> = {
+  form: 'Задано вручную',
+  registry: 'Из перечня документов',
+  journal: 'Оценено по датам замечаний в журнале',
+};
 /** Значение фильтра для документов, у которых статус не указан. */
 const NO_STATUS = '—';
 
@@ -36,9 +41,13 @@ function statusKey(state: DocumentState): string {
   return norm(state.status) || NO_STATUS;
 }
 
-/** Снимок назначений для сравнения: есть ли несохранённые изменения. */
-function snapshot(assignments: ManagerAssignments): string {
-  return JSON.stringify(managersRows(assignments));
+/** Снимок ручного ввода для сравнения: есть ли несохранённые изменения. */
+function snapshot(data: ManualData): string {
+  return JSON.stringify(manualSheets(data));
+}
+
+function cloneManual(data: ManualData): ManualData {
+  return { managers: new Map(data.managers), documents: new Map(data.documents) };
 }
 
 /** Изменение показателя: стрелка и величина; рост — к лучшему. */
@@ -56,13 +65,13 @@ export function App() {
   const [granularity, setGranularity] = useState<Granularity>('quarter');
   const [periodKey, setPeriodKey] = useState('');
   const [status, setStatus] = useState('');
-  const [assignments, setAssignments] = useState<ManagerAssignments>(new Map());
-  const [savedSnapshot, setSavedSnapshot] = useState(snapshot(new Map()));
+  const [manual, setManual] = useState<ManualData>(emptyManualData());
+  const [savedSnapshot, setSavedSnapshot] = useState(snapshot(emptyManualData()));
   const [saving, setSaving] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const input = useRef<HTMLInputElement>(null);
 
-  const dirty = snapshot(assignments) !== savedSnapshot;
+  const dirty = snapshot(manual) !== savedSnapshot;
   useEffect(() => {
     if (!dirty) return;
     const warn = (e: BeforeUnloadEvent) => e.preventDefault();
@@ -71,7 +80,7 @@ export function App() {
   }, [dirty]);
 
   async function load(source: SourceFolder) {
-    if (dirty && !window.confirm('Назначения РП не сохранены. Загрузить данные заново и потерять изменения?')) return;
+    if (dirty && !window.confirm('Ручной ввод не сохранён. Загрузить данные заново и потерять изменения?')) return;
     setLoading(true);
     setError(null);
     try {
@@ -80,8 +89,8 @@ export function App() {
       setFolder(source);
       setPeriodKey('');
       setStatus('');
-      setAssignments(new Map(result.managers));
-      setSavedSnapshot(snapshot(result.managers));
+      setManual(cloneManual(result.manual));
+      setSavedSnapshot(snapshot(result.manual));
       setSaveMessage(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -103,26 +112,40 @@ export function App() {
     }
   }
 
-  function assign(row: ProjectRow, manager: string) {
-    const next = new Map(assignments);
-    if (manager.trim()) next.set(row.key, { project: row.project, manager });
-    else next.delete(row.key);
-    setAssignments(next);
+  function setManager(group: ProjectGroup, manager: string) {
+    const next = cloneManual(manual);
+    if (manager.trim()) next.managers.set(group.key, { project: group.project, manager });
+    else next.managers.delete(group.key);
+    setManual(next);
     setSaveMessage(null);
   }
 
-  async function saveAssignments() {
-    const data = writeWorkbook([{ name: MANAGERS_SHEET_NAME, rows: managersRows(assignments) }]);
+  /** Меняет статус или циклы документа; дата изменения — сегодняшняя. */
+  function setOverride(row: DocumentRow, change: { status?: string; cycles?: number | null }) {
+    const next = cloneManual(manual);
+    const current = next.documents.get(row.key) ?? { project: row.project, document: row.document, status: '', cycles: null, updated: null };
+    const updated = { ...current, ...change, updated: dateFromTimestamp(Date.now()) };
+    if (updated.status || updated.cycles !== null) next.documents.set(row.key, updated);
+    else next.documents.delete(row.key);
+    setManual(next);
+    setSaveMessage(null);
+  }
+
+  async function saveManual() {
+    const data = writeWorkbook(manualSheets(manual));
+    // Если файл ручного ввода уже лежит в корне папки, перезаписываем его, а не создаём второй.
+    const existing = evaluation?.manualPath;
+    const name = existing && !existing.includes('/') ? existing : MANUAL_FILE_NAME;
     setSaving(true);
     try {
       if (folder?.save) {
-        await folder.save(MANAGERS_FILE_NAME, data);
-        setSaveMessage(`Сохранено в папку: ${MANAGERS_FILE_NAME}`);
+        await folder.save(name, data);
+        setSaveMessage(`Сохранено в папку: ${name}`);
       } else {
-        downloadFile(MANAGERS_FILE_NAME, data, XLSX_TYPE);
-        setSaveMessage('Файл скачан. Положите его в папку с журналами, чтобы назначения видели все.');
+        downloadFile(name, data, XLSX_TYPE);
+        setSaveMessage('Файл скачан. Положите его в папку с журналами, чтобы введённое видели все.');
       }
-      setSavedSnapshot(snapshot(assignments));
+      setSavedSnapshot(snapshot(manual));
     } catch (e) {
       setSaveMessage(`Не удалось сохранить: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -130,7 +153,7 @@ export function App() {
     }
   }
 
-  const documents = useMemo(() => applyManagers(evaluation?.documents ?? [], assignments), [evaluation, assignments]);
+  const documents = useMemo(() => applyManual(evaluation?.documents ?? [], manual), [evaluation, manual]);
   const periods = useMemo(() => listPeriods(documents, granularity), [documents, granularity]);
   const selected = periods.find((p) => p.key === periodKey) ?? null;
   // Без выбранного периода — текущее состояние по всем данным.
@@ -148,7 +171,8 @@ export function App() {
   const matches = (state: DocumentState) => !status || statusKey(state) === status;
   const states = useMemo(() => statesAt(documents, asOf, cfg).filter(matches), [documents, asOf, status]);
   const points = useMemo(() => trend(documents, granularity, cfg, matches), [documents, granularity, status]);
-  const projects = useMemo(() => projectRows(evaluation?.documents ?? []), [evaluation]);
+  // Подсказки в форме — значения без ручного ввода: из перечня и по журналу.
+  const formGroups = useMemo(() => manualRows(statesAt(evaluation?.documents ?? [], null, cfg)), [evaluation]);
 
   return (
     <div class="page">
@@ -245,15 +269,21 @@ export function App() {
           <TrendTable points={points} granularity={granularity} selected={periodKey} onSelect={setPeriodKey} />
           <DocumentsTable states={states} previousEnd={previousEnd} />
           <ManagersTable groups={byManager(states.filter((s) => s.manager))} unassigned={states.filter((s) => !s.manager).length} />
-          <ManagersForm
-            projects={projects}
-            assignments={assignments}
-            onChange={assign}
+          <ManualForm
+            groups={formGroups}
+            data={manual}
+            statuses={cfg.documentStatuses}
+            onManager={setManager}
+            onStatus={(row, status) => setOverride(row, { status })}
+            onCycles={(row, value) => {
+              const cycles = Number(value);
+              setOverride(row, { cycles: value.trim() && Number.isInteger(cycles) && cycles >= 1 ? cycles : null });
+            }}
             dirty={dirty}
             canSave={Boolean(folder?.save)}
             saving={saving}
             message={saveMessage}
-            onSave={saveAssignments}
+            onSave={saveManual}
           />
           <LoadLog evaluation={evaluation} />
         </>
@@ -316,7 +346,7 @@ function TrendTable(props: { points: TrendPoint[]; granularity: Granularity; sel
                   <td>
                     <button type="button" class="link" onClick={() => props.onSelect(g.key === props.selected ? '' : g.key)}>{g.label}</button>
                   </td>
-                  <td class="num">{g.scored}</td>
+                  <td class="num">{g.scored}{g.total > g.scored && <span class="muted"> из {g.total}</span>}</td>
                   <td class="num">
                     {g.average === null ? '—' : <span class={`badge zone-${zoneOf(g.average, cfg)}`}>{fmt(g.average)}</span>}
                   </td>
@@ -335,7 +365,7 @@ function TrendTable(props: { points: TrendPoint[]; granularity: Granularity; sel
 function IndicatorCell({ state, id }: { state: DocumentState; id: IndicatorId }) {
   if (!state.score || !state.facts) return <td class="num muted">—</td>;
   const indicator = state.score.indicators[id];
-  const source = id === 'cycles' ? (state.cyclesSource === 'registry' ? ' Из перечня документов.' : ' Оценено по датам замечаний в журнале.') : '';
+  const source = id === 'cycles' ? ` ${CYCLES_SOURCE[state.cyclesSource]}.` : '';
   return (
     <td class={`num ${indicator.over > 0 ? 'over' : ''}`} title={`Норматив ${fmt(indicator.norm)}, сверх нормы ${fmt(indicator.over)}.${source}`}>
       {fmt(indicator.fact)} <span class="muted">→ {fmt(indicator.score)}</span>
@@ -360,7 +390,7 @@ function DocumentsTable({ states, previousEnd }: { states: DocumentState[]; prev
     <section>
       <h2>Документы</h2>
       <p class="muted">
-        В колонках показателей: фактическое количество → балл показателя. Циклы без перечня документов оцениваются по датам замечаний.
+        В колонках показателей: фактическое количество → балл показателя. Циклы, не заданные вручную или в перечне, оцениваются по датам замечаний.
         {previousEnd && ` «Изменение» — к состоянию на ${formatDate(previousEnd)}.`}
       </p>
       <div class="scroll">
@@ -444,7 +474,7 @@ function ManagersTable({ groups, unassigned }: { groups: GroupSummary[]; unassig
       <h2>Рейтинг руководителей проектов</h2>
       <p class="muted">
         Средний ИИКД и средний балл по каждому показателю: видно, на чём теряется качество.
-        {unassigned > 0 && ` Документов без РП: ${unassigned} — назначьте РП проектам в форме ниже.`}
+        {unassigned > 0 && ` Документов без РП: ${unassigned} — назначьте РП проектам в разделе «Ручной ввод».`}
       </p>
       {groups.length > 0 && (
         <div class="scroll">

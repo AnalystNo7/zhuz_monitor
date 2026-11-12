@@ -120,6 +120,29 @@ export interface ManagerAssignment {
 /** Назначения РП по ключу проекта (`norm(project)`). */
 export type ManagerAssignments = Map<string, ManagerAssignment>;
 
+/** Статус и число циклов документа, заданные вручную. */
+export interface DocumentOverride {
+  project: string;
+  document: string;
+  /** Статус документа; пустая строка — не задан. */
+  status: string;
+  /** Число циклов согласования; `null` — не задано. */
+  cycles: number | null;
+  /**
+   * Дата последнего изменения, `ГГГГ-ММ-ДД`. Ручные значения действуют с этой даты:
+   * на более ранние даты берутся сведения из перечня и оценка по журналу.
+   */
+  updated: string | null;
+}
+
+/** Всё, что задаётся вручную в форме и хранится в папке отдельной книгой. */
+export interface ManualData {
+  /** РП по ключу проекта (`norm(project)`). */
+  managers: ManagerAssignments;
+  /** Статусы и циклы по ключу документа (`norm(project)|norm(document)`). */
+  documents: Map<string, DocumentOverride>;
+}
+
 export interface IndicatorScore {
   fact: number;
   norm: number;
@@ -181,6 +204,8 @@ export interface ProjectDocument {
   journalMissing: boolean;
   /** Строки принятых замечаний без категории: пока они есть, документ не рассчитывается. */
   uncategorizedRows: number[];
+  /** Статус и циклы, заданные вручную; подставляются вместе с назначениями РП. */
+  manual: DocumentOverride | null;
 }
 
 /** Состояние документа на дату: учтены замечания, выданные не позже этой даты. */
@@ -193,8 +218,10 @@ export interface DocumentState {
   status: string;
   /** Сколько уникальных замечаний выдано к этой дате (с любым статусом). */
   remarkCount: number;
-  /** Откуда взято число циклов: из перечня или оценено по журналу. */
-  cyclesSource: 'registry' | 'journal';
+  /** Число циклов согласования к дате; известно и для документа, который не рассчитан. */
+  cycles: number;
+  /** Откуда взято число циклов: задано вручную, из перечня или оценено по журналу. */
+  cyclesSource: 'form' | 'registry' | 'journal';
   /** Фактические значения показателей; `null`, если документ не рассчитан. */
   facts: { design: number; content: number; repeats: number; cycles: number } | null;
   /** `null`, если документ не рассчитан (см. `missing`). */
@@ -204,16 +231,16 @@ export interface DocumentState {
 
 export interface FileReport {
   path: string;
-  kind: 'journal' | 'registry' | 'managers' | 'skipped';
+  kind: 'journal' | 'registry' | 'manual' | 'skipped';
   note: string;
 }
 
 export interface Evaluation {
   documents: ProjectDocument[];
-  /** Назначения РП из файла в папке. */
-  managers: ManagerAssignments;
-  /** Путь к файлу с назначениями РП, если он есть в папке. */
-  managersPath: string | null;
+  /** Данные, введённые вручную, из файла в папке. */
+  manual: ManualData;
+  /** Путь к файлу ручного ввода, если он есть в папке. */
+  manualPath: string | null;
   files: FileReport[];
   issues: Issue[];
 }

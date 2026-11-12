@@ -41,10 +41,14 @@ export function stateAt(doc: ProjectDocument, asOf: string | null, cfg: Config):
   if (doc.startDate === null) missing.push('date');
   const blocked = doc.journalMissing || doc.uncategorizedRows.length > 0;
 
-  // Число циклов: из перечня, а без него — по журналу, сколько циклов началось к дате.
+  // Введённое вручную действует с даты изменения; на более ранние даты — перечень и журнал.
+  const manual = doc.manual && (asOf === null || (doc.manual.updated ?? '') <= asOf) ? doc.manual : null;
+
+  // Число циклов: вручную, из перечня, а без них — по журналу, сколько циклов началось к дате.
   // Документ, согласованный без замечаний, прошёл один цикл.
+  const manualCycles = manual?.cycles ?? null;
   const registryCycles = passport?.cycles ?? null;
-  const cycles = registryCycles ?? Math.max(1, ...remarks.map((r) => r.cycle));
+  const cycles = manualCycles ?? registryCycles ?? Math.max(1, ...remarks.map((r) => r.cycle));
 
   let facts: DocumentState['facts'] = null;
   if (!blocked) {
@@ -56,9 +60,10 @@ export function stateAt(doc: ProjectDocument, asOf: string | null, cfg: Config):
     asOf,
     manager: doc.manager,
     developer: passport?.developer ?? '',
-    status: passport?.status ?? '',
+    status: manual?.status || passport?.status || '',
     remarkCount: remarks.length,
-    cyclesSource: registryCycles === null ? 'journal' : 'registry',
+    cycles,
+    cyclesSource: manualCycles !== null ? 'form' : registryCycles !== null ? 'registry' : 'journal',
     facts,
     score: facts ? computeScore(facts, cfg, passport?.pages ?? null) : null,
     missing,

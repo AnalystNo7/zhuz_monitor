@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CONFIG as cfg } from '../src/core/config.ts';
 import { evaluate, type InputWorkbook } from '../src/core/pipeline.ts';
-import { managersRows } from '../src/core/managers.ts';
+import { manualSheets } from '../src/core/manual.ts';
 import { stateAt } from '../src/core/timeline.ts';
 import type { ProjectDocument } from '../src/core/types.ts';
 import { journalSheet, registrySheet, type RemarkInput } from './helpers.ts';
@@ -249,25 +249,33 @@ describe('несколько перечней за разное время', () 
   });
 });
 
-describe('назначения РП в папке', () => {
+describe('файл ручного ввода в папке', () => {
   const managersSheet = (rows: string[][]) => ({ name: 'РП по проектам', rows });
 
-  it('файл «Проект — РП» распознаётся и не мешает журналам и перечням', () => {
+  it('распознаётся и не мешает журналам и перечням', () => {
+    const [, documentsSheet] = manualSheets({
+      managers: new Map(),
+      documents: new Map([['проект альфа|техническое задание', { project: 'Проект Альфа', document: 'Техническое задание', status: 'Согласован', cycles: 2, updated: '2026-10-01' }]]),
+    });
     const result = evaluate([
-      { path: 'РП по проектам.xlsx', sheets: [managersSheet([['Проект', 'РП'], ['Проект Альфа', 'Петров П.'], [' проект бета ', 'Сидорова А.'], ['Гамма', '']])] },
+      {
+        path: 'Ручной ввод.xlsx',
+        sheets: [managersSheet([['Проект', 'РП'], ['Проект Альфа', 'Петров П.'], [' проект бета ', 'Сидорова А.'], ['Гамма', '']]), documentsSheet!],
+      },
       { path: 'ЖУЗ.xlsx', sheets: [journalSheet(content(2))] },
     ]);
-    expect([...result.managers.entries()]).toEqual([
+    expect([...result.manual.managers.entries()]).toEqual([
       ['проект альфа', { project: 'Проект Альфа', manager: 'Петров П.' }],
       ['проект бета', { project: 'проект бета', manager: 'Сидорова А.' }],
     ]);
-    expect(result.managersPath).toBe('РП по проектам.xlsx');
+    expect([...result.manual.documents.keys()]).toEqual(['проект альфа|техническое задание']);
+    expect(result.manualPath).toBe('Ручной ввод.xlsx');
     expect(result.files.map((f) => [f.kind, f.note])).toEqual([
       ['journal', 'ЖУЗ: замечаний 2; в перечне документов не указан'],
-      ['managers', 'Назначения РП: проектов 2'],
+      ['manual', 'Ручной ввод: РП проектов 2, документов со статусом или циклами 1'],
     ]);
-    // Сам документ РП не получает: назначение подставляется в интерфейсе.
-    expect(result.documents[0]!.manager).toBe('');
+    // Сам документ ручных значений не получает: они подставляются в интерфейсе.
+    expect(result.documents[0]).toMatchObject({ manager: '', manual: null });
   });
 
   it('при нескольких файлах действует более поздний', () => {
@@ -275,13 +283,8 @@ describe('назначения РП в папке', () => {
       { path: 'a.xlsx', modified: 2, sheets: [managersSheet([['Проект', 'РП'], ['Альфа', 'Новый']])] },
       { path: 'b.xlsx', modified: 1, sheets: [managersSheet([['Проект', 'РП'], ['Альфа', 'Старый'], ['Бета', 'Сидорова А.']])] },
     ]);
-    expect([...result.managers.values()].map((a) => a.manager)).toEqual(['Новый', 'Сидорова А.']);
+    expect([...result.manual.managers.values()].map((a) => a.manager)).toEqual(['Новый', 'Сидорова А.']);
+    expect(result.manualPath).toBe('a.xlsx');
     expect(result.issues).toEqual([expect.objectContaining({ level: 'warning', file: 'a.xlsx' })]);
-  });
-
-  it('сохранённые назначения читаются обратно', () => {
-    const assignments = new Map([['бета', { project: 'Бета', manager: 'Сидорова А.' }], ['альфа', { project: 'Альфа', manager: ' Петров П. ' }]]);
-    const result = evaluate([{ path: 'РП.xlsx', sheets: [managersSheet(managersRows(assignments))] }]);
-    expect([...result.managers.values()]).toEqual([{ project: 'Альфа', manager: 'Петров П.' }, { project: 'Бета', manager: 'Сидорова А.' }]);
   });
 });

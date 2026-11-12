@@ -45,6 +45,8 @@ export interface Config {
    * замечания прошло больше этого числа дней и замечания выданы к новой версии файла.
    */
   cycleGapDays: number;
+  /** Статусы документа, из которых выбирают в форме ручного ввода. */
+  documentStatuses: string[];
 }
 
 /** Константы методики и принятые по проекту решения. */
@@ -123,6 +125,7 @@ export const DEFAULT_CONFIG: Config = {
   indicatorPriority: ['repeats', 'content', 'design'],
   noRemarksMarkers: ['без замечаний', 'нет замечаний', 'замечаний нет'],
   cycleGapDays: 7,
+  documentStatuses: ['Согласован', 'На согласовании', 'На доработке'],
 };
 
 export const INDICATOR_IDS: IndicatorId[] = ['design', 'content', 'repeats', 'cycles'];
