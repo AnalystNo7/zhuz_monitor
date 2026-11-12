@@ -1,0 +1,104 @@
+:root {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --text: #1c2330;
+  --muted: #5d6778;
+  --line: #dfe3ea;
+  --accent: #1f5fbf;
+  --green: #1e7d3a;
+  --green-bg: #e3f4e7;
+  --yellow: #8a6100;
+  --yellow-bg: #fff3c9;
+  --red: #b3261e;
+  --red-bg: #fde4e1;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c;
+    --surface: #1d2129;
+    --text: #e6e9ef;
+    --muted: #9aa4b5;
+    --line: #313743;
+    --accent: #6ea8ff;
+    --green: #6fd08a;
+    --green-bg: #17351f;
+    --yellow: #f0c75e;
+    --yellow-bg: #3d3210;
+    --red: #ff8a80;
+    --red-bg: #47201c;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif;
+}
+
+.page { max-width: 1400px; margin: 0 auto; padding: 20px 16px 48px; }
+
+h1 { margin: 0; font-size: 20px; }
+h2 { margin: 28px 0 4px; font-size: 16px; }
+p { margin: 4px 0 10px; }
+.muted { color: var(--muted); }
+
+.top { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; justify-content: space-between; }
+.actions { display: flex; gap: 8px; }
+
+button, select {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 7px 14px;
+}
+button { cursor: pointer; }
+button:disabled { opacity: 0.6; cursor: default; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+@media (prefers-color-scheme: dark) { button.primary { color: #10131a; } }
+
+.filter { display: inline-flex; gap: 8px; align-items: center; margin-top: 16px; color: var(--muted); }
+
+.alert { margin-top: 16px; padding: 10px 14px; border-radius: 6px; background: var(--red-bg); color: var(--red); }
+
+.empty { margin-top: 24px; padding: 28px; background: var(--surface); border: 1px dashed var(--line); border-radius: 10px; max-width: 720px; }
+.empty h2 { margin-top: 0; }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 16px; }
+.card { display: flex; flex-direction: column; gap: 2px; padding: 14px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+.card strong { font-size: 30px; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.card .label { color: var(--muted); font-size: 13px; }
+.card.kpi.zone-green { background: var(--green-bg); border-color: var(--green); }
+.card.kpi.zone-yellow { background: var(--yellow-bg); border-color: var(--yellow); }
+.card.kpi.zone-red { background: var(--red-bg); border-color: var(--red); }
+.card.kpi.zone-green strong, .card.kpi.zone-green .label { color: var(--green); }
+.card.kpi.zone-yellow strong, .card.kpi.zone-yellow .label { color: var(--yellow); }
+.card.kpi.zone-red strong, .card.kpi.zone-red .label { color: var(--red); }
+
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
+.dot.zone-green { background: var(--green); }
+.dot.zone-yellow { background: var(--yellow); }
+.dot.zone-red { background: var(--red); }
+
+.scroll { overflow-x: auto; margin-top: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: 7px 10px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; font-size: 13px; color: var(--muted); white-space: nowrap; }
+tbody tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+td.wide { min-width: 260px; }
+td.over { color: var(--red); }
+
+.badge { display: inline-block; min-width: 52px; padding: 1px 8px; border-radius: 999px; text-align: center; font-weight: 600; }
+.badge.zone-green, td.heat-green { background: var(--green-bg); color: var(--green); }
+.badge.zone-yellow, td.heat-yellow { background: var(--yellow-bg); color: var(--yellow); }
+.badge.zone-red, td.heat-red { background: var(--red-bg); color: var(--red); }
+
+details { margin-top: 8px; }
+summary { cursor: pointer; color: var(--muted); }

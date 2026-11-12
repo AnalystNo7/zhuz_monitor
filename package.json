@@ -1,0 +1,25 @@
+{
+  "name": "zhuz-monitor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Мониторинг качества проектной документации по журналам учёта замечаний (расчёт ИИКД)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build && node scripts/postbuild.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "samples": "node scripts/make-samples.ts"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3",
+    "preact": "^11.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "vite-plugin-singlefile": "^2.3.4",
+    "vitest": "^5.1.0"
+  }
+}
