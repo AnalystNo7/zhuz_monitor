@@ -1,5 +1,5 @@
 import { isBlank, norm, parseReportingDate, str } from './text.ts';
-import type { Cell, Expertise, Issue, Registry, RegistryRow, SheetData } from './types.ts';
+import type { Cell, Issue, Registry, RegistryRow, SheetData } from './types.ts';
 
 type Column =
   | 'project' | 'manager' | 'developer' | 'document' | 'status' | 'channel' | 'folderLink'
@@ -120,23 +120,6 @@ export function parseRegistry(sheet: SheetData, path: string): RegistryParse {
       issues.push({ level: 'warning', file: path, row: rowNumber, message: `Число циклов «${str(cyclesCell)}» не распознано.` });
     }
 
-    // Внутренняя и внешняя экспертиза оцениваются отдельно: на каждую — своя строка и свой ЖУЗ.
-    const internal = yesNo(cell(row, 'internal'));
-    const external = yesNo(cell(row, 'external'));
-    let expertise: Expertise | null = null;
-    if (internal && external) {
-      issues.push({
-        level: 'warning',
-        file: path,
-        row: rowNumber,
-        message: `«${document}»: отмечены и внутреннее, и внешнее согласование. На каждую экспертизу нужна отдельная строка со своим ЖУЗ.`,
-      });
-    } else if (internal) {
-      expertise = 'internal';
-    } else if (external) {
-      expertise = 'external';
-    }
-
     rows.push({
       row: rowNumber,
       project: str(cell(row, 'project')),
@@ -146,9 +129,8 @@ export function parseRegistry(sheet: SheetData, path: string): RegistryParse {
       status: str(cell(row, 'status')),
       channel: str(cell(row, 'channel')),
       folderLink: str(cell(row, 'folderLink')),
-      internal,
-      external,
-      expertise,
+      internal: yesNo(cell(row, 'internal')),
+      external: yesNo(cell(row, 'external')),
       cycles,
       pages: count(cell(row, 'pages')),
       journalFile: str(cell(row, 'journalFile')),

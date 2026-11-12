@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_CONFIG as cfg, type Config } from '../src/core/config.ts';
+import { DEFAULT_CONFIG as cfg } from '../src/core/config.ts';
 import { parseJournal } from '../src/core/journal.ts';
 import type { Cell } from '../src/core/types.ts';
 import { JOURNAL_HEADER, journalSheet, remarkRow } from './helpers.ts';
@@ -87,29 +87,31 @@ describe('разбор журнала учёта замечаний', () => {
     ]);
   });
 
-  it('принятое замечание без категории относится к содержанию и помечается', () => {
+  it('принятое замечание без категории блокирует расчёт журнала', () => {
     const journal = parseJournal(
       journalSheet([{ category: null }, { category: 'Новая категория' }, { category: 'Прочее' }, { category: null, status: 'Отклонено' }]),
       'ЖУЗ.xlsx',
       cfg,
     )!;
     expect(journal.remarks.map((r) => [r.indicator, r.uncategorized])).toEqual([
-      ['content', true],
-      ['content', true],
+      [null, true],
+      [null, true],
       [null, false],
       [null, false],
     ]);
-    expect(journal.issues.map((i) => i.message)).toEqual([
-      'У принятых замечаний не указана категория — учтены как «содержание». Строки: 3.',
-      'Категория «новая категория» отсутствует в справочнике. Строки: 4.',
+    // Отклонённое замечание без категории на расчёт не влияет и расчёт не блокирует.
+    expect(journal.uncategorizedRows).toEqual([3, 4]);
+    expect(journal.issues.map((i) => [i.level, i.message])).toEqual([
+      ['error', 'ЖУЗ не рассчитан: у принятых замечаний не указана категория или её нет в справочнике. Укажите категорию и обновите данные. Строки: 3, 4.'],
+      ['warning', 'Категория «новая категория» отсутствует в справочнике. Строки: 4.'],
     ]);
   });
 
-  it('замечания без категории можно не учитывать — настройкой', () => {
-    const strict: Config = { ...cfg, uncategorizedIndicator: null };
-    const journal = parseJournal(journalSheet([{ category: null }]), 'ЖУЗ.xlsx', strict)!;
-    expect(journal.remarks[0]).toMatchObject({ indicator: null, uncategorized: true });
-    expect(journal.issues[0]!.message).toContain('не учтены');
+  it('частично распознанная категория не блокирует расчёт', () => {
+    const journal = parseJournal(journalSheet([{ category: 'Уточнение / корректировка информации; Совсем новое' }]), 'ЖУЗ.xlsx', cfg)!;
+    expect(journal.remarks[0]).toMatchObject({ indicator: 'content', uncategorized: false });
+    expect(journal.uncategorizedRows).toEqual([]);
+    expect(journal.issues.map((i) => i.level)).toEqual(['warning']);
   });
 
   it('повторяющиеся по тексту замечания считаются один раз', () => {
@@ -126,6 +128,7 @@ describe('разбор журнала учёта замечаний', () => {
     expect(journal.remarks).toHaveLength(2);
     // Объединённое замечание принято, если принята хотя бы одна из строк; дата — самая ранняя.
     expect(journal.remarks[0]).toMatchObject({ copies: 2, status: 'accepted', indicator: 'design', uncategorized: false, date: '2026-08-14' });
+    expect(journal.uncategorizedRows).toEqual([]);
     expect(journal.issues).toEqual([expect.objectContaining({ level: 'info', message: expect.stringContaining('уникальных замечаний 2') })]);
 
     const separate = parseJournal(journalSheet([{ text: 'Одно и то же' }, { text: 'Одно и то же' }]), 'ЖУЗ.xlsx', { ...cfg, mergeDuplicateRemarks: false })!;
@@ -136,5 +139,74 @@ describe('разбор журнала учёта замечаний', () => {
     const journal = parseJournal(journalSheet([{}, { date: 'не помню' }]), 'ЖУЗ.xlsx', cfg)!;
     expect(journal.remarks.map((r) => r.date)).toEqual(['2026-09-08', null]);
     expect(journal.issues).toEqual([expect.objectContaining({ level: 'warning', message: expect.stringContaining('не указана дата') })]);
+  });
+});
+
+describe('циклы согласования по журналу', () => {
+  const cycles = (remarks: Parameters<typeof journalSheet>[0]) => {
+    const journal = parseJournal(journalSheet(remarks), 'ЖУЗ.xlsx', cfg)!;
+    return { total: journal.cycles, source: journal.cycleSource, byRemark: journal.remarks.map((r) => r.cycle) };
+  };
+
+  it('замечания одной волны — один цикл', () => {
+    expect(cycles([{ date: '08.09.2026' }, { date: '14.09.2026' }])).toEqual({ total: 1, source: 'dates', byRemark: [1, 1] });
+  });
+
+  it('новый цикл: перерыв больше 7 дней и новая версия файла', () => {
+    // Как в ЖУЗ ПМИ: замечания к версии 1.0 и через 8 дней — к версии 1.1.
+    const remarks = [
+      { date: '14.09.2026', fileVersion: 'ПМИ 1.0' },
+      { date: '17.09.2026', fileVersion: 'ПМИ 1.0' },
+      { date: '25.09.2026', fileVersion: 'ПМИ 1.1' },
+    ];
+    expect(cycles(remarks)).toMatchObject({ total: 2, byRemark: [1, 1, 2] });
+  });
+
+  it('перерыв без смены версии файла — тот же цикл', () => {
+    // Как в ЖУЗ ПР СЗИ: две даты с разницей 9 дней к одной версии, затем новая версия.
+    const remarks = [
+      { date: '13.04.2026', fileVersion: 'ПР_v1.4.1' },
+      { date: '22.04.2026', fileVersion: 'ПР_v1.4.1.docx' },
+      { date: '04.09.2026', fileVersion: 'ПР_v1.5.2' },
+    ];
+    expect(cycles(remarks)).toMatchObject({ total: 2, byRemark: [1, 1, 2] });
+  });
+
+  it('без версии файла решает перерыв в датах', () => {
+    expect(cycles([{ date: '16.01.2026', fileVersion: null }, { date: '14.08.2026', fileVersion: 'МД.docx' }])).toMatchObject({ total: 2 });
+    expect(cycles([{ date: '01.03.2026', fileVersion: null }, { date: '20.03.2026', fileVersion: null }])).toMatchObject({ total: 2 });
+  });
+
+  it('отклонённые замечания тоже отмечают цикл, замечание без даты — первый цикл', () => {
+    const remarks = [
+      { date: '01.03.2026', fileVersion: 'v1' },
+      { date: '01.06.2026', fileVersion: 'v2', status: 'Отклонено' },
+      { date: 'нет', fileVersion: 'v1' },
+    ];
+    expect(cycles(remarks)).toMatchObject({
+      total: 2,
+      byRemark: [1, 2, 1],
+    });
+  });
+
+  it('строки «Цикл согласования N» важнее дат', () => {
+    const sheet = journalSheet([]);
+    sheet.rows.push(['Цикл согласования 1'], remarkRow({ number: 1, date: '01.03.2026' }), remarkRow({ number: 2, date: '01.06.2026' }));
+    sheet.rows.push(['Цикл согласования № 2'], remarkRow({ number: 3, date: '02.06.2026' }));
+    const journal = parseJournal(sheet, 'ЖУЗ.xlsx', cfg)!;
+    expect(journal.cycleSource).toBe('markers');
+    expect(journal.remarks.map((r) => r.cycle)).toEqual([1, 1, 2]);
+    expect(journal.cycles).toBe(2);
+  });
+
+  it('одна строка «Цикл согласования 1» не мешает считать циклы по датам', () => {
+    const sheet = journalSheet([]);
+    sheet.rows.push(
+      ['Цикл согласования 1 '],
+      remarkRow({ number: 1, date: '15.05.2026', fileVersion: 'ПР_28.04' }),
+      remarkRow({ number: 2, date: '21.09.2026', fileVersion: 'ПР_18.09.26' }),
+    );
+    const journal = parseJournal(sheet, 'ЖУЗ.xlsx', cfg)!;
+    expect(journal).toMatchObject({ cycleSource: 'dates', cycles: 2 });
   });
 });

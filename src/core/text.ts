@@ -61,6 +61,11 @@ export function nextPeriod(period: Period, granularity: Granularity): Period {
   return bucketOf(next.toISOString().slice(0, 10), granularity);
 }
 
+/** Число дней от одной даты `ГГГГ-ММ-ДД` до другой. */
+export function daysBetween(from: string, to: string): number {
+  return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
+}
+
 /** `ДД.ММ.ГГГГ` из `ГГГГ-ММ-ДД`. */
 export function formatDate(isoDate: string): string {
   return `${isoDate.slice(8, 10)}.${isoDate.slice(5, 7)}.${isoDate.slice(0, 4)}`;

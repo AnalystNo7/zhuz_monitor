@@ -1,28 +1,28 @@
-import { useMemo, useRef, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { byManager, summarize, trend, type GroupSummary, type TrendPoint } from '../core/aggregate.ts';
 import { DEFAULT_CONFIG, INDICATOR_IDS } from '../core/config.ts';
+import { applyManagers, MANAGERS_FILE_NAME, MANAGERS_SHEET_NAME, managersRows } from '../core/managers.ts';
 import { round2, zoneOf } from '../core/score.ts';
 import { formatDate, norm } from '../core/text.ts';
 import { history, listPeriods, stateAt, statesAt } from '../core/timeline.ts';
-import type { DocumentState, Evaluation, Expertise, Granularity, IndicatorId, MissingPart, Zone } from '../core/types.ts';
-import { canPickFolder, folderFromFileList, pickFolder, type SourceFolder } from '../io/folder.ts';
+import type { DocumentState, Evaluation, Granularity, IndicatorId, ManagerAssignments, MissingPart, Zone } from '../core/types.ts';
+import { canPickFolder, downloadFile, folderFromFileList, pickFolder, type SourceFolder } from '../io/folder.ts';
+import { writeWorkbook } from '../io/xlsx-write.ts';
 import { loadFolder } from './load.ts';
+import { ManagersForm, projectRows, type ProjectRow } from './ManagersForm.tsx';
 
 const cfg = DEFAULT_CONFIG;
+const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 const ZONE_LABEL: Record<Zone, string> = { green: 'Зелёная зона', yellow: 'Жёлтая зона', red: 'Красная зона' };
-const EXPERTISE_LABEL: Record<Expertise, string> = { internal: 'внутренняя экспертиза', external: 'внешняя экспертиза' };
 const MISSING_LABEL: Record<MissingPart, string> = {
-  registry: 'нет в перечне документов',
-  journal: 'нет ЖУЗ',
-  cycles: 'циклы не указаны',
+  journal: 'ЖУЗ не найден',
+  categories: 'у принятых замечаний нет категории',
   date: 'дата начала не определена',
 };
 const LEVEL_LABEL = { error: 'Ошибка', warning: 'Внимание', info: 'К сведению' } as const;
 /** Значение фильтра для документов, у которых статус не указан. */
 const NO_STATUS = '—';
-
-type ExpertiseFilter = '' | Expertise;
 
 function fmt(value: number | null): string {
   return value === null ? '—' : value.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
@@ -34,6 +34,11 @@ function percent(part: number, total: number): string {
 
 function statusKey(state: DocumentState): string {
   return norm(state.status) || NO_STATUS;
+}
+
+/** Снимок назначений для сравнения: есть ли несохранённые изменения. */
+function snapshot(assignments: ManagerAssignments): string {
+  return JSON.stringify(managersRows(assignments));
 }
 
 /** Изменение показателя: стрелка и величина; рост — к лучшему. */
@@ -50,18 +55,34 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [granularity, setGranularity] = useState<Granularity>('quarter');
   const [periodKey, setPeriodKey] = useState('');
-  const [expertise, setExpertise] = useState<ExpertiseFilter>('');
   const [status, setStatus] = useState('');
+  const [assignments, setAssignments] = useState<ManagerAssignments>(new Map());
+  const [savedSnapshot, setSavedSnapshot] = useState(snapshot(new Map()));
+  const [saving, setSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const input = useRef<HTMLInputElement>(null);
 
+  const dirty = snapshot(assignments) !== savedSnapshot;
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [dirty]);
+
   async function load(source: SourceFolder) {
+    if (dirty && !window.confirm('Назначения РП не сохранены. Загрузить данные заново и потерять изменения?')) return;
     setLoading(true);
     setError(null);
     try {
-      setEvaluation(await loadFolder(source, cfg));
+      const result = await loadFolder(source, cfg);
+      setEvaluation(result);
       setFolder(source);
       setPeriodKey('');
       setStatus('');
+      setAssignments(new Map(result.managers));
+      setSavedSnapshot(snapshot(result.managers));
+      setSaveMessage(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -82,7 +103,34 @@ export function App() {
     }
   }
 
-  const documents = evaluation?.documents ?? [];
+  function assign(row: ProjectRow, manager: string) {
+    const next = new Map(assignments);
+    if (manager.trim()) next.set(row.key, { project: row.project, manager });
+    else next.delete(row.key);
+    setAssignments(next);
+    setSaveMessage(null);
+  }
+
+  async function saveAssignments() {
+    const data = writeWorkbook([{ name: MANAGERS_SHEET_NAME, rows: managersRows(assignments) }]);
+    setSaving(true);
+    try {
+      if (folder?.save) {
+        await folder.save(MANAGERS_FILE_NAME, data);
+        setSaveMessage(`Сохранено в папку: ${MANAGERS_FILE_NAME}`);
+      } else {
+        downloadFile(MANAGERS_FILE_NAME, data, XLSX_TYPE);
+        setSaveMessage('Файл скачан. Положите его в папку с журналами, чтобы назначения видели все.');
+      }
+      setSavedSnapshot(snapshot(assignments));
+    } catch (e) {
+      setSaveMessage(`Не удалось сохранить: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const documents = useMemo(() => applyManagers(evaluation?.documents ?? [], assignments), [evaluation, assignments]);
   const periods = useMemo(() => listPeriods(documents, granularity), [documents, granularity]);
   const selected = periods.find((p) => p.key === periodKey) ?? null;
   // Без выбранного периода — текущее состояние по всем данным.
@@ -97,10 +145,10 @@ export function App() {
     return [...labels].sort((a, b) => a[1].localeCompare(b[1], 'ru'));
   }, [current]);
 
-  const matches = (state: DocumentState) => (!expertise || state.expertise === expertise) && (!status || statusKey(state) === status);
-  const states = useMemo(() => statesAt(documents, asOf, cfg).filter(matches), [documents, asOf, expertise, status]);
-  const points = useMemo(() => trend(documents, granularity, cfg, matches), [documents, granularity, expertise, status]);
-  const hasExpertise = current.some((s) => s.expertise);
+  const matches = (state: DocumentState) => !status || statusKey(state) === status;
+  const states = useMemo(() => statesAt(documents, asOf, cfg).filter(matches), [documents, asOf, status]);
+  const points = useMemo(() => trend(documents, granularity, cfg, matches), [documents, granularity, status]);
+  const projects = useMemo(() => projectRows(evaluation?.documents ?? []), [evaluation]);
 
   return (
     <div class="page">
@@ -147,8 +195,8 @@ export function App() {
         <section class="empty">
           <h2>Выберите папку с журналами</h2>
           <p>
-            Инструмент прочитает все книги Excel в папке и её подпапках: журналы учёта замечаний и перечни документов
-            от руководителей проектов. Файлы никуда не передаются — расчёт идёт на этом компьютере.
+            Инструмент прочитает все книги Excel в папке и её подпапках: журналы учёта замечаний, перечни документов
+            и назначения руководителей проектов. Файлы никуда не передаются — расчёт идёт на этом компьютере.
           </p>
         </section>
       )}
@@ -192,21 +240,21 @@ export function App() {
                 </select>
               </label>
             )}
-            {hasExpertise && (
-              <label>
-                Экспертиза
-                <select id="expertise" value={expertise} onChange={(e) => setExpertise(e.currentTarget.value as ExpertiseFilter)}>
-                  <option value="">Все</option>
-                  <option value="internal">Внутренняя</option>
-                  <option value="external">Внешняя</option>
-                </select>
-              </label>
-            )}
           </div>
           <SummaryCards states={states} />
           <TrendTable points={points} granularity={granularity} selected={periodKey} onSelect={setPeriodKey} />
           <DocumentsTable states={states} previousEnd={previousEnd} />
-          <ManagersTable groups={byManager(states.filter((s) => s.manager))} />
+          <ManagersTable groups={byManager(states.filter((s) => s.manager))} unassigned={states.filter((s) => !s.manager).length} />
+          <ManagersForm
+            projects={projects}
+            assignments={assignments}
+            onChange={assign}
+            dirty={dirty}
+            canSave={Boolean(folder?.save)}
+            saving={saving}
+            message={saveMessage}
+            onSave={saveAssignments}
+          />
           <LoadLog evaluation={evaluation} />
         </>
       )}
@@ -217,17 +265,18 @@ export function App() {
 function SummaryCards({ states }: { states: DocumentState[] }) {
   const s = summarize(states);
   const zone = s.average === null ? null : zoneOf(s.average, cfg);
+  const notScored = s.total - s.scored;
   return (
     <section class="cards">
       <div class={`card kpi ${zone ? `zone-${zone}` : ''}`}>
         <span class="label">Средний ИИКД</span>
         <strong>{fmt(s.average)}</strong>
-        <span class="label">{zone ? ZONE_LABEL[zone] : 'нет оценённых документов'}</span>
+        <span class="label">{zone ? ZONE_LABEL[zone] : 'нет рассчитанных документов'}</span>
       </div>
       <div class="card">
-        <span class="label">Документов оценено</span>
+        <span class="label">Документов рассчитано</span>
         <strong>{s.scored}</strong>
-        <span class="label">из {s.total}; с неполными данными: {s.incomplete}</span>
+        <span class={`label ${notScored > 0 ? 'over' : ''}`}>из {s.total}{notScored > 0 && `; не рассчитано: ${notScored}`}</span>
       </div>
       {(['green', 'yellow', 'red'] as Zone[]).map((z) => (
         <div class="card" key={z}>
@@ -285,18 +334,24 @@ function TrendTable(props: { points: TrendPoint[]; granularity: Granularity; sel
 
 function IndicatorCell({ state, id }: { state: DocumentState; id: IndicatorId }) {
   if (!state.score || !state.facts) return <td class="num muted">—</td>;
-  if (id === 'cycles' && state.facts.cycles === null) return <td class="num muted" title="Число циклов не указано">?</td>;
   const indicator = state.score.indicators[id];
+  const source = id === 'cycles' ? (state.cyclesSource === 'registry' ? ' Из перечня документов.' : ' Оценено по датам замечаний в журнале.') : '';
   return (
-    <td class={`num ${indicator.over > 0 ? 'over' : ''}`} title={`Норматив ${fmt(indicator.norm)}, сверх нормы ${fmt(indicator.over)}`}>
+    <td class={`num ${indicator.over > 0 ? 'over' : ''}`} title={`Норматив ${fmt(indicator.norm)}, сверх нормы ${fmt(indicator.over)}.${source}`}>
       {fmt(indicator.fact)} <span class="muted">→ {fmt(indicator.score)}</span>
     </td>
   );
 }
 
 function Score({ state }: { state: DocumentState }) {
-  if (!state.score) return <span class="muted">нет оценки</span>;
+  if (!state.score) return <span class="over">не рассчитан</span>;
   return <span class={`badge zone-${state.score.zone}`} title={ZONE_LABEL[state.score.zone]}>{fmt(state.score.iikd)}</span>;
+}
+
+function notesOf(state: DocumentState): string[] {
+  return state.missing.map((m) =>
+    m === 'categories' ? `${MISSING_LABEL[m]}, строки ${state.doc.uncategorizedRows.join(', ')}` : MISSING_LABEL[m],
+  );
 }
 
 function DocumentsTable({ states, previousEnd }: { states: DocumentState[]; previousEnd: string | null }) {
@@ -305,7 +360,7 @@ function DocumentsTable({ states, previousEnd }: { states: DocumentState[]; prev
     <section>
       <h2>Документы</h2>
       <p class="muted">
-        В колонках показателей: фактическое количество → балл показателя.
+        В колонках показателей: фактическое количество → балл показателя. Циклы без перечня документов оцениваются по датам замечаний.
         {previousEnd && ` «Изменение» — к состоянию на ${formatDate(previousEnd)}.`}
       </p>
       <div class="scroll">
@@ -330,21 +385,12 @@ function DocumentsTable({ states, previousEnd }: { states: DocumentState[]; prev
               const previous = previousEnd ? stateAt(doc, previousEnd, cfg) : null;
               const change = state.score && previous?.score ? round2(state.score.iikd - previous.score.iikd) : null;
               const versions = expanded === doc.key ? history(doc, cfg) : [];
-              const details = [
-                doc.startDate ? `с ${formatDate(doc.startDate)}` : '',
-                state.expertise ? EXPERTISE_LABEL[state.expertise] : '',
-                state.status,
-              ].filter(Boolean).join(' · ');
-              // Замечания, отнесённые к показателю по умолчанию: категория в журнале не указана.
-              const uncategorized = doc.remarks.filter(
-                (r) => r.uncategorized && r.indicator && (state.asOf === null || (r.date ?? doc.startDate ?? '') <= state.asOf),
-              ).length;
-              const notes = [...state.missing.map((m) => MISSING_LABEL[m]), uncategorized > 0 ? `без категории: ${uncategorized}` : ''].filter(Boolean);
+              const details = [doc.startDate ? `с ${formatDate(doc.startDate)}` : '', state.status].filter(Boolean).join(' · ');
               return (
                 <>
                   <tr key={doc.key}>
                     <td>{doc.project || '—'}</td>
-                    <td>{state.manager || '—'}</td>
+                    <td>{state.manager || <span class="muted">не назначен</span>}</td>
                     <td class="wide">
                       {doc.name}
                       {details && <div class="muted small">{details}</div>}
@@ -360,9 +406,9 @@ function DocumentsTable({ states, previousEnd }: { states: DocumentState[]; prev
                     ))}
                     <td class="num"><Score state={state} /></td>
                     <td class="num">
-                      {!previousEnd ? <span class="muted">—</span> : previous ? <Delta value={change} /> : <span class="muted">новый</span>}
+                      {!previousEnd || !state.score ? <span class="muted">—</span> : previous ? <Delta value={change} /> : <span class="muted">новый</span>}
                     </td>
-                    <td class="muted">{notes.join('; ')}</td>
+                    <td class={state.score ? 'muted' : 'over'}>{notesOf(state).join('; ')}</td>
                   </tr>
                   {versions.map((version, index) => {
                     const added = version.remarkCount - (versions[index - 1]?.remarkCount ?? 0);
@@ -392,45 +438,49 @@ function DocumentsTable({ states, previousEnd }: { states: DocumentState[]; prev
   );
 }
 
-function ManagersTable({ groups }: { groups: GroupSummary[] }) {
-  if (groups.length === 0) return null;
+function ManagersTable({ groups, unassigned }: { groups: GroupSummary[]; unassigned: number }) {
   return (
     <section>
-      <h2>Руководители проектов</h2>
-      <p class="muted">Средний ИИКД и средний балл по каждому показателю: видно, на чём теряется качество.</p>
-      <div class="scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>РП</th>
-              <th class="num">Документов</th>
-              <th class="num">Средний ИИКД</th>
-              <th class="num">Зелёная / жёлтая / красная</th>
-              {INDICATOR_IDS.map((id) => (
-                <th key={id} class="num">{cfg.indicators[id].short}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {groups.map((g) => (
-              <tr key={g.key}>
-                <td>{g.label}</td>
-                <td class="num">{g.scored}</td>
-                <td class="num">
-                  {g.average === null ? '—' : <span class={`badge zone-${zoneOf(g.average, cfg)}`}>{fmt(g.average)}</span>}
-                </td>
-                <td class="num">{g.zones.green} / {g.zones.yellow} / {g.zones.red}</td>
-                {INDICATOR_IDS.map((id) => {
-                  const average = g.indicators[id].average;
-                  return (
-                    <td key={id} class={`num ${average === null ? 'muted' : `heat-${zoneOf(average, cfg)}`}`}>{fmt(average)}</td>
-                  );
-                })}
+      <h2>Рейтинг руководителей проектов</h2>
+      <p class="muted">
+        Средний ИИКД и средний балл по каждому показателю: видно, на чём теряется качество.
+        {unassigned > 0 && ` Документов без РП: ${unassigned} — назначьте РП проектам в форме ниже.`}
+      </p>
+      {groups.length > 0 && (
+        <div class="scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>РП</th>
+                <th class="num">Документов</th>
+                <th class="num">Средний ИИКД</th>
+                <th class="num">Зелёная / жёлтая / красная</th>
+                {INDICATOR_IDS.map((id) => (
+                  <th key={id} class="num">{cfg.indicators[id].short}</th>
+                ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {groups.map((g) => (
+                <tr key={g.key}>
+                  <td>{g.label}</td>
+                  <td class="num">{g.scored}{g.total > g.scored && <span class="muted"> из {g.total}</span>}</td>
+                  <td class="num">
+                    {g.average === null ? '—' : <span class={`badge zone-${zoneOf(g.average, cfg)}`}>{fmt(g.average)}</span>}
+                  </td>
+                  <td class="num">{g.zones.green} / {g.zones.yellow} / {g.zones.red}</td>
+                  {INDICATOR_IDS.map((id) => {
+                    const average = g.indicators[id].average;
+                    return (
+                      <td key={id} class={`num ${average === null ? 'muted' : `heat-${zoneOf(average, cfg)}`}`}>{fmt(average)}</td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </section>
   );
 }

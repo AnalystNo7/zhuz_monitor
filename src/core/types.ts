@@ -26,9 +26,6 @@ export interface Period {
   end: string;
 }
 
-/** Вид экспертизы, по итогам которой заведён журнал. */
-export type Expertise = 'internal' | 'external';
-
 export interface Issue {
   level: 'error' | 'warning' | 'info';
   file: string;
@@ -58,8 +55,10 @@ export interface Remark {
   status: RemarkStatus;
   /** Показатель, в который пошло замечание; `null` — в расчёте не участвует. */
   indicator: RemarkIndicator | null;
-  /** Категория не указана или не распознана; показатель назначен по умолчанию. */
+  /** Принятое замечание без распознанной категории: из-за него журнал не рассчитывается. */
   uncategorized: boolean;
+  /** Номер цикла согласования, к которому относится замечание (с 1). */
+  cycle: number;
   /** Сколько строк журнала с тем же текстом объединено в это замечание (1 — без повторов). */
   copies: number;
   resolution: string;
@@ -76,6 +75,12 @@ export interface Journal {
   remarks: Remark[];
   /** Сколько строк с замечаниями было в журнале до объединения повторов. */
   rowCount: number;
+  /** Число циклов согласования по журналу. */
+  cycles: number;
+  /** Как определены циклы: по строкам «Цикл согласования N» или по датам и версиям файла. */
+  cycleSource: 'markers' | 'dates';
+  /** Строки принятых замечаний без распознанной категории. Если они есть, журнал не рассчитывается. */
+  uncategorizedRows: number[];
   issues: Issue[];
 }
 
@@ -91,8 +96,6 @@ export interface RegistryRow {
   folderLink: string;
   internal: boolean | null;
   external: boolean | null;
-  /** Вид экспертизы строки; `null`, если не отмечен или отмечены оба. */
-  expertise: Expertise | null;
   cycles: number | null;
   pages: number | null;
   /** Имя файла ЖУЗ либо отметка «без замечаний». */
@@ -107,6 +110,15 @@ export interface Registry {
   rows: RegistryRow[];
   issues: Issue[];
 }
+
+/** Назначение руководителя проекту, заданное вручную. */
+export interface ManagerAssignment {
+  project: string;
+  manager: string;
+}
+
+/** Назначения РП по ключу проекта (`norm(project)`). */
+export type ManagerAssignments = Map<string, ManagerAssignment>;
 
 export interface IndicatorScore {
   fact: number;
@@ -134,20 +146,27 @@ export interface Passport {
   manager: string;
   developer: string;
   status: string;
-  expertise: Expertise | null;
   cycles: number | null;
   pages: number | null;
 }
 
-/** Чего не хватило для полной оценки документа. */
-export type MissingPart = 'registry' | 'journal' | 'cycles' | 'date';
+/**
+ * Почему документ не рассчитан или рассчитан не полностью:
+ * `journal` — журнал не найден; `categories` — у принятых замечаний нет категории;
+ * `date` — дату начала определить не удалось.
+ */
+export type MissingPart = 'journal' | 'categories' | 'date';
 
 /** Проектный документ: один журнал и сведения о нём из перечней. */
 export interface ProjectDocument {
-  /** Ключ документа: журнал, а для документа без журнала — проект, наименование и вид экспертизы. */
+  /** Ключ документа: журнал, а для документа без журнала — связка «проект — документ». */
   key: string;
   project: string;
   name: string;
+  /** РП из перечня документов; назначение вручную подставляется отдельно. */
+  manager: string;
+  /** Откуда взят РП. */
+  managerSource: 'form' | 'registry' | null;
   /**
    * Точка отсчёта: дата первого замечания в журнале. Для документа без замечаний — дата перечня.
    * `null`, если дату определить не удалось.
@@ -158,8 +177,10 @@ export interface ProjectDocument {
   journalPath: string | null;
   /** Уникальные замечания журнала. */
   remarks: Remark[];
-  /** `false`, если журнал указан в перечне, но не найден: оценить документ нельзя. */
-  evaluable: boolean;
+  /** Журнал указан в перечне, но не найден: оценить документ нельзя. */
+  journalMissing: boolean;
+  /** Строки принятых замечаний без категории: пока они есть, документ не рассчитывается. */
+  uncategorizedRows: number[];
 }
 
 /** Состояние документа на дату: учтены замечания, выданные не позже этой даты. */
@@ -170,24 +191,29 @@ export interface DocumentState {
   manager: string;
   developer: string;
   status: string;
-  expertise: Expertise | null;
   /** Сколько уникальных замечаний выдано к этой дате (с любым статусом). */
   remarkCount: number;
-  /** Фактические значения; `cycles: null` — число циклов не указано. */
-  facts: { design: number; content: number; repeats: number; cycles: number | null } | null;
-  /** `null`, если документ оценить нельзя (нет ЖУЗ). */
+  /** Откуда взято число циклов: из перечня или оценено по журналу. */
+  cyclesSource: 'registry' | 'journal';
+  /** Фактические значения показателей; `null`, если документ не рассчитан. */
+  facts: { design: number; content: number; repeats: number; cycles: number } | null;
+  /** `null`, если документ не рассчитан (см. `missing`). */
   score: DocScore | null;
   missing: MissingPart[];
 }
 
 export interface FileReport {
   path: string;
-  kind: 'journal' | 'registry' | 'skipped';
+  kind: 'journal' | 'registry' | 'managers' | 'skipped';
   note: string;
 }
 
 export interface Evaluation {
   documents: ProjectDocument[];
+  /** Назначения РП из файла в папке. */
+  managers: ManagerAssignments;
+  /** Путь к файлу с назначениями РП, если он есть в папке. */
+  managersPath: string | null;
   files: FileReport[];
   issues: Issue[];
 }

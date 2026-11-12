@@ -1,6 +1,6 @@
 import { classifyCategories, classifyStatus, pickIndicator } from './classify.ts';
 import type { Config } from './config.ts';
-import { isBlank, norm, parseDate, str } from './text.ts';
+import { daysBetween, isBlank, norm, parseDate, str } from './text.ts';
 import type { Cell, Issue, Journal, Remark, RemarkIndicator, RemarkStatus, SheetData } from './types.ts';
 
 type Column =
@@ -30,6 +30,8 @@ const REQUIRED: Column[] = ['text', 'category', 'status'];
 const HEADER_SEARCH_ROWS = 20;
 /** Сколько номеров строк перечислять в одном сообщении журнала загрузки. */
 const ROWS_IN_MESSAGE = 12;
+/** Строка-разделитель вида «Цикл согласования 2». */
+const CYCLE_MARKER = /цикл согласования\s*№?\s*(\d+)/;
 
 type ColumnMap = Partial<Record<Column, number>>;
 
@@ -61,9 +63,23 @@ function isHintRow(row: Cell[]): boolean {
   return row.filter((cell) => norm(cell).includes('устанавливается')).length >= 2;
 }
 
+function cycleMarker(row: Cell[]): number | null {
+  for (const cell of row) {
+    const match = CYCLE_MARKER.exec(norm(cell));
+    if (match) return Number(match[1]);
+  }
+  return null;
+}
+
 function rowList(rows: number[]): string {
-  const shown = rows.slice(0, ROWS_IN_MESSAGE).join(', ');
-  return rows.length > ROWS_IN_MESSAGE ? `${shown} и ещё ${rows.length - ROWS_IN_MESSAGE}` : shown;
+  const sorted = [...rows].sort((a, b) => a - b);
+  const shown = sorted.slice(0, ROWS_IN_MESSAGE).join(', ');
+  return sorted.length > ROWS_IN_MESSAGE ? `${shown} и ещё ${sorted.length - ROWS_IN_MESSAGE}` : shown;
+}
+
+/** Версия файла для сравнения: без регистра, расширения и точек в конце. */
+function versionKey(fileVersion: string): string {
+  return norm(fileVersion).replace(/\.(docx?|xlsx?|pdf)$/, '').replace(/[.\s]+$/, '');
 }
 
 /** Строка журнала до объединения повторов и назначения показателя. */
@@ -72,6 +88,8 @@ interface Draft extends Remark {
   unknownCategories: string[];
   /** Номера всех строк, объединённых в замечание. */
   rows: number[];
+  /** Номер из ближайшей строки «Цикл согласования N» выше; `null`, если такой строки нет. */
+  marker: number | null;
 }
 
 /** При объединении повторов побеждает более «сильный» статус: принятое замечание остаётся принятым. */
@@ -99,8 +117,51 @@ function mergeDuplicates(drafts: Draft[]): Draft[] {
     first.indicators.push(...draft.indicators);
     first.unknownCategories.push(...draft.unknownCategories);
     first.categoryRaw ||= draft.categoryRaw;
+    first.fileVersion ||= draft.fileVersion;
   }
   return unique;
+}
+
+/**
+ * Номера циклов согласования. Если в журнале есть строки «Цикл согласования N» хотя бы
+ * для двух циклов, используются они. Иначе циклы определяются по датам: новый цикл
+ * начинается, если после предыдущего замечания прошло больше `gapDays` дней
+ * и замечания выданы не к той версии файла, что уже встречалась в текущем цикле.
+ * Учитываются замечания с любым статусом: отклонённые тоже означают, что документ рассматривали.
+ */
+function assignCycles(drafts: Draft[], gapDays: number): 'markers' | 'dates' {
+  const markers = new Set(drafts.map((d) => d.marker).filter((m) => m !== null));
+  if (markers.size >= 2) {
+    for (const draft of drafts) draft.cycle = draft.marker ?? 1;
+    return 'markers';
+  }
+
+  const versionsByDate = new Map<string, Set<string>>();
+  for (const draft of drafts) {
+    if (!draft.date) continue;
+    const versions = versionsByDate.get(draft.date) ?? new Set<string>();
+    const version = versionKey(draft.fileVersion);
+    if (version) versions.add(version);
+    versionsByDate.set(draft.date, versions);
+  }
+
+  const cycleByDate = new Map<string, number>();
+  let cycle = 1;
+  let seen = new Set<string>();
+  let previous: string | null = null;
+  for (const date of [...versionsByDate.keys()].sort()) {
+    const versions = versionsByDate.get(date)!;
+    const sameVersion = versions.size > 0 && [...versions].every((v) => seen.has(v));
+    if (previous !== null && daysBetween(previous, date) > gapDays && !sameVersion) {
+      cycle += 1;
+      seen = new Set();
+    }
+    for (const v of versions) seen.add(v);
+    cycleByDate.set(date, cycle);
+    previous = date;
+  }
+  for (const draft of drafts) draft.cycle = draft.date ? cycleByDate.get(draft.date)! : 1;
+  return 'dates';
 }
 
 /**
@@ -118,12 +179,15 @@ export function parseJournal(sheet: SheetData, path: string, cfg: Config): Journ
 
   const drafts: Draft[] = [];
   let lastProject = '';
+  let marker: number | null = null;
   for (let index = header.index + 1; index < sheet.rows.length; index++) {
     const row = sheet.rows[index] ?? [];
     if (isHintRow(row)) continue;
     // Замечанием считается строка, где заполнено хотя бы что-то по существу.
-    // Пустые строки и разделители вроде «Цикл согласования 1» сюда не попадают.
-    if (isBlank(cell(row, 'text')) && isBlank(cell(row, 'category')) && isBlank(cell(row, 'status'))) continue;
+    if (isBlank(cell(row, 'text')) && isBlank(cell(row, 'category')) && isBlank(cell(row, 'status'))) {
+      marker = cycleMarker(row) ?? marker;
+      continue;
+    }
 
     const project = str(cell(row, 'project')) || lastProject;
     lastProject = project;
@@ -148,12 +212,14 @@ export function parseJournal(sheet: SheetData, path: string, cfg: Config): Journ
       status: classifyStatus(statusRaw, cfg),
       indicator: null,
       uncategorized: false,
+      cycle: 1,
       copies: 1,
       resolution: str(cell(row, 'resolution')),
       fileVersion: str(cell(row, 'fileVersion')),
       indicators: classified.indicators,
       unknownCategories: classified.unknown,
       rows: [index + 1],
+      marker,
     });
   }
 
@@ -164,11 +230,10 @@ export function parseJournal(sheet: SheetData, path: string, cfg: Config): Journ
   if (merged.length < drafts.length) {
     note('info', `Повторяющиеся по тексту замечания учтены один раз: строк ${drafts.length}, уникальных замечаний ${merged.length}.`);
   }
+  const cycleSource = assignCycles(merged, cfg.cycleGapDays);
 
   // Показатель назначается после объединения: у повтора категория может быть указана только в одной из строк.
-  const fallback = cfg.uncategorizedIndicator;
-  const fallbackNote = fallback ? `учтены как «${cfg.indicators[fallback].short.toLowerCase()}»` : 'не учтены';
-  const noCategory: number[] = [];
+  const uncategorizedRows: number[] = [];
   const unknownCategory = new Map<string, number[]>();
   const unknownStatus = new Map<string, number[]>();
   const noStatus: number[] = [];
@@ -185,17 +250,20 @@ export function parseJournal(sheet: SheetData, path: string, cfg: Config): Journ
     if (draft.categories.length > 0) {
       draft.indicator = pickIndicator(draft.indicators, cfg);
     } else {
-      draft.indicator = fallback;
       draft.uncategorized = true;
-      if (draft.unknownCategories.length === 0) noCategory.push(...draft.rows);
+      uncategorizedRows.push(...draft.rows);
     }
     for (const fragment of new Set(draft.unknownCategories)) {
       unknownCategory.set(fragment, [...(unknownCategory.get(fragment) ?? []), ...draft.rows]);
     }
   }
 
-  if (noCategory.length > 0) {
-    note('warning', `У принятых замечаний не указана категория — ${fallbackNote}. Строки: ${rowList(noCategory)}.`);
+  if (uncategorizedRows.length > 0) {
+    note(
+      'error',
+      'ЖУЗ не рассчитан: у принятых замечаний не указана категория или её нет в справочнике. ' +
+        `Укажите категорию и обновите данные. Строки: ${rowList(uncategorizedRows)}.`,
+    );
   }
   for (const [fragment, rows] of unknownCategory) {
     note('warning', `Категория «${fragment}» отсутствует в справочнике. Строки: ${rowList(rows)}.`);
@@ -217,7 +285,7 @@ export function parseJournal(sheet: SheetData, path: string, cfg: Config): Journ
     note('info', `В журнале ${documents.size} разных наименования документа — все замечания отнесены к одному документу.`);
   }
 
-  const remarks: Remark[] = merged.map(({ indicators: _i, unknownCategories: _u, rows: _r, ...remark }) => remark);
+  const remarks: Remark[] = merged.map(({ indicators: _i, unknownCategories: _u, rows: _r, marker: _m, ...remark }) => remark);
   return {
     path,
     sheet: sheet.name,
@@ -225,6 +293,9 @@ export function parseJournal(sheet: SheetData, path: string, cfg: Config): Journ
     document: drafts.find((d) => d.document)?.document ?? '',
     remarks,
     rowCount: drafts.length,
+    cycles: Math.max(1, ...remarks.map((r) => r.cycle)),
+    cycleSource,
+    uncategorizedRows: uncategorizedRows.sort((a, b) => a - b),
     issues,
   };
 }

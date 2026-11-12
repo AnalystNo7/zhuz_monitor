@@ -6,10 +6,8 @@ import type { DocumentState, Granularity, IndicatorId, Period, ProjectDocument, 
 export interface Summary {
   /** Всего документов в выборке. */
   total: number;
-  /** Документов с рассчитанным ИИКД. */
+  /** Документов с рассчитанным ИИКД; остальные не рассчитаны (нет журнала или категорий). */
   scored: number;
-  /** Документов, по которым не хватило данных для полной оценки. */
-  incomplete: number;
   average: number | null;
   zones: Record<Zone, number>;
 }
@@ -43,7 +41,6 @@ export function summarize(states: DocumentState[]): Summary {
   return {
     total: states.length,
     scored: values.length,
-    incomplete: states.filter((s) => s.missing.length > 0).length,
     average: mean(values),
     zones,
   };
@@ -53,9 +50,7 @@ function indicatorSummary(states: DocumentState[], id: IndicatorId): IndicatorSu
   const scores: number[] = [];
   let failed = 0;
   for (const state of states) {
-    if (!state.score || !state.facts) continue;
-    // Неуказанное число циклов не штрафуется и в статистику показателя не идёт.
-    if (id === 'cycles' && state.facts.cycles === null) continue;
+    if (!state.score) continue;
     const indicator = state.score.indicators[id];
     scores.push(indicator.score);
     if (indicator.over > 0) failed += 1;

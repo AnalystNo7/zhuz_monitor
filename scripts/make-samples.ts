@@ -1,10 +1,14 @@
 // Генерирует демонстрационную папку samples/demo с вымышленными данными.
-// В ней один журнал на документ; журналы пополнялись в разные месяцы, поэтому
-// видна динамика. В папке «Архив» лежат более ранний перечень и старая копия
-// одного из журналов — инструмент сам берёт актуальные.
+// Один журнал на документ; журналы пополнялись в разные месяцы, поэтому видна
+// динамика, а циклы согласования оцениваются по датам замечаний.
+// Перечень документов ведёт только РП проекта «Альфа»; РП проекта «Бета» назначен
+// в файле «РП по проектам.xlsx», у проекта «Гамма» РП не назначен. В одном журнале
+// есть принятые замечания без категории — такой документ не рассчитывается.
+// В папке «Архив» лежат более ранний перечень и старая копия журнала.
 // Запуск: npm run samples
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { MANAGERS_FILE_NAME, MANAGERS_SHEET_NAME } from '../src/core/managers.ts';
 import { writeWorkbook, type WriteCell } from '../src/io/xlsx-write.ts';
 
 const ROOT = 'samples/demo';
@@ -123,7 +127,6 @@ const solution: Doc = {
   waves: [{ date: '18.06.2026', content: 13, design: 4 }, { date: '22.09.2026', content: 8, design: 2, repeats: 2 }],
 };
 const adminGuide: Doc = { ...alpha, name: 'Руководство администратора', expertise: 'external', waves: null };
-const testProgram: Doc = { ...beta, name: 'Программа и методика испытаний', expertise: 'external', waves: null };
 const userGuide: Doc = {
   ...beta, name: 'Руководство пользователя', expertise: 'external',
   waves: [{ date: '20.08.2026', content: 9, design: 5, other: 2 }],
@@ -152,22 +155,19 @@ for (const doc of [spec, solution, userGuide, regulation, accessMatrix, privateS
 // Старая копия журнала: только первые замечания. Инструмент её распознаёт и не учитывает.
 write(join('Архив', journalFile(accessMatrix)), [{ name: 'Шаблон ЖУЗ', rows: journalRows(accessMatrix, accessMatrix.waves!.slice(0, 1)) }]);
 
-registry('Перечень документов.xlsx', 'Данные на 30.09.2026', [
+// Перечень РП проекта «Альфа»: статусы и число циклов. У остальных проектов перечней нет.
+registry('Альфа/Перечень документов Альфа.xlsx', 'Данные на 30.09.2026', [
   { doc: spec, status: 'Согласован', cycles: 3, pages: 40 },
   { doc: solution, status: 'На доработке', cycles: 2, pages: 65 },
   { doc: adminGuide, status: 'Согласован', cycles: 1, pages: 20 },
-  { doc: testProgram, status: 'Согласован', cycles: 1, pages: 25 },
-  { doc: userGuide, status: 'Согласован', cycles: 2, pages: 30 },
-  { doc: regulation, status: 'На согласовании', cycles: null, pages: 15 },
-  { doc: accessMatrix, status: 'На доработке', cycles: 5, pages: 12 },
-  { doc: privateSpec, status: 'На согласовании', cycles: 2, pages: 28 },
 ]);
 // Более ранний перечень: по нему видно, как менялись статус и число циклов.
-registry('Архив/Перечень документов (июнь).xlsx', 'Данные на 30.06.2026', [
+registry('Архив/Перечень документов Альфа (июнь).xlsx', 'Данные на 30.06.2026', [
   { doc: spec, status: 'На согласовании', cycles: 1, pages: 40 },
   { doc: solution, status: 'На согласовании', cycles: 1, pages: 65 },
-  { doc: testProgram, status: 'Согласован', cycles: 1, pages: 25 },
-  { doc: accessMatrix, status: 'На согласовании', cycles: 2, pages: 12 },
 ]);
+
+// Назначения РП, сохранённые из формы инструмента.
+write(MANAGERS_FILE_NAME, [{ name: MANAGERS_SHEET_NAME, rows: [['Проект', 'РП'], ['Бета', beta.manager]] }]);
 
 console.log(`Демонстрационные данные записаны в ${ROOT}`);

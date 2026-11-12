@@ -1,8 +1,11 @@
 import { DEFAULT_CONFIG, type Config } from './config.ts';
 import { parseJournal } from './journal.ts';
+import { parseManagers } from './managers.ts';
 import { parseRegistry } from './registry.ts';
 import { dateFromTimestamp, dirOf, fileKey, formatDate, norm } from './text.ts';
-import type { Evaluation, FileReport, Issue, Journal, Passport, ProjectDocument, Registry, SheetData } from './types.ts';
+import type {
+  Evaluation, FileReport, Issue, Journal, ManagerAssignments, Passport, ProjectDocument, Registry, SheetData,
+} from './types.ts';
 
 export interface InputWorkbook {
   /** Путь относительно выбранной папки, с разделителем `/`. */
@@ -38,6 +41,12 @@ interface DocumentDraft {
   noRemarks: boolean;
 }
 
+interface ManagersFile {
+  path: string;
+  modified: number;
+  assignments: ManagerAssignments;
+}
+
 /**
  * Полный разбор набора книг из папки: распознаёт журналы и перечни документов,
  * отбирает актуальную копию каждого журнала и связывает журналы с перечнями.
@@ -48,6 +57,7 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
   const files: FileReport[] = [];
   const issues: Issue[] = [];
   const fileDates = new Map<string, string>();
+  const managersFiles: ManagersFile[] = [];
 
   for (const workbook of workbooks) {
     if (typeof workbook.modified === 'number') fileDates.set(workbook.path, dateFromTimestamp(workbook.modified));
@@ -74,8 +84,16 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
         recognized = true;
         registries.push(parsed.registry);
         issues.push(...parsed.registry.issues);
-      } else if (parsed.kind === 'incomplete') {
+        continue;
+      }
+      if (parsed.kind === 'incomplete') {
         incompleteRegistry = true;
+        continue;
+      }
+      const assignments = parseManagers(sheet);
+      if (assignments) {
+        recognized = true;
+        managersFiles.push({ path: workbook.path, modified: workbook.modified ?? 0, assignments });
       }
     }
     if (recognized) continue;
@@ -191,8 +209,8 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
         }
       }
 
-      // Документ определяется своим журналом; без журнала — связкой «проект — документ» и видом экспертизы.
-      let key = journal ? `journal:${identityOf(journal)}` : `row:${pairKey(row.project, row.document)}|${row.expertise ?? ''}`;
+      // Документ определяется своим журналом; без журнала — связкой «проект — документ».
+      let key = journal ? `journal:${identityOf(journal)}` : `row:${pairKey(row.project, row.document)}`;
       const occurrence = (seen.get(key) ?? 0) + 1;
       seen.set(key, occurrence);
       if (occurrence > 1) {
@@ -218,7 +236,6 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
         manager: row.manager,
         developer: row.developer,
         status: row.status,
-        expertise: row.expertise,
         cycles: row.cycles,
         pages: row.pages,
       });
@@ -244,6 +261,7 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
   const documents: ProjectDocument[] = [...drafts.values()].map((draft) => {
     const { journal, passports } = draft;
     const latest = passports[passports.length - 1];
+    const manager = [...passports].reverse().find((p) => p.manager)?.manager ?? '';
     const remarks = journal?.remarks ?? [];
     const firstRemark = remarks.map((r) => r.date).filter((d): d is string => d !== null).sort()[0];
     const firstPassport = passports.map((p) => p.asOf).filter((d): d is string => d !== null).sort()[0];
@@ -251,17 +269,35 @@ export function evaluate(workbooks: InputWorkbook[], cfg: Config = DEFAULT_CONFI
       key: draft.key,
       project: latest?.project || journal?.project || '',
       name: latest?.document || journal?.document || (journal ? baseName(journal.path) : ''),
+      manager,
+      managerSource: manager ? ('registry' as const) : null,
       // Точка отсчёта — первое замечание; для документа без замечаний — дата перечня.
       startDate: firstRemark ?? firstPassport ?? (journal ? (fileDates.get(journal.path) ?? null) : null),
       passports,
       journalPath: journal?.path ?? null,
       remarks,
-      evaluable: journal !== null || draft.noRemarks,
+      journalMissing: journal === null && !draft.noRemarks,
+      uncategorizedRows: journal?.uncategorizedRows ?? [],
     };
   });
 
   documents.sort((a, b) => a.project.localeCompare(b.project, 'ru') || a.name.localeCompare(b.name, 'ru') || a.key.localeCompare(b.key));
+  // Назначения РП: если файлов несколько, более поздний дополняет и переопределяет ранние.
+  const managers: ManagerAssignments = new Map();
+  managersFiles.sort((a, b) => a.modified - b.modified || a.path.localeCompare(b.path));
+  for (const file of managersFiles) {
+    for (const [key, value] of file.assignments) managers.set(key, value);
+    files.push({ path: file.path, kind: 'managers', note: `Назначения РП: проектов ${file.assignments.size}` });
+  }
+  if (managersFiles.length > 1) {
+    issues.push({
+      level: 'warning',
+      file: managersFiles[managersFiles.length - 1]!.path,
+      message: `В папке ${managersFiles.length} файла с назначениями РП. При совпадении проектов действует файл, изменённый позже.`,
+    });
+  }
+
   files.sort((a, b) => a.path.localeCompare(b.path, 'ru'));
-  return { documents, files, issues };
+  return { documents, managers, managersPath: managersFiles[managersFiles.length - 1]?.path ?? null, files, issues };
 }
 

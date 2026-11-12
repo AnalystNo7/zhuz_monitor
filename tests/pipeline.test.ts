@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CONFIG as cfg } from '../src/core/config.ts';
 import { evaluate, type InputWorkbook } from '../src/core/pipeline.ts';
+import { managersRows } from '../src/core/managers.ts';
 import { stateAt } from '../src/core/timeline.ts';
 import type { ProjectDocument } from '../src/core/types.ts';
 import { journalSheet, registrySheet, type RemarkInput } from './helpers.ts';
@@ -33,15 +34,18 @@ describe('связывание перечня с журналами', () => {
     const [manual, spec] = result.documents as [ProjectDocument, ProjectDocument];
 
     // Тот же набор, что в примере из методики: 6 / 15 / 1 / 4.
-    expect(spec).toMatchObject({ project: 'Проект Альфа', journalPath: 'Альфа/ЖУЗ_ТЗ.xlsx', startDate: '2026-09-08', evaluable: true });
+    expect(spec).toMatchObject({
+      project: 'Проект Альфа', manager: 'Петров П.', managerSource: 'registry', journalPath: 'Альфа/ЖУЗ_ТЗ.xlsx',
+      startDate: '2026-09-08', journalMissing: false, uncategorizedRows: [],
+    });
     expect(now(spec)).toMatchObject({
-      manager: 'Петров П.', status: 'Согласован', expertise: 'external', remarkCount: 24,
+      manager: 'Петров П.', status: 'Согласован', remarkCount: 24, cyclesSource: 'registry',
       facts: { design: 6, content: 15, repeats: 1, cycles: 4 }, missing: [],
     });
     expect(now(spec).score).toMatchObject({ iikd: 84.45, zone: 'yellow' });
 
     // Документ без замечаний получает 100; точка отсчёта — дата перечня.
-    expect(manual).toMatchObject({ journalPath: null, startDate: '2026-09-30', evaluable: true });
+    expect(manual).toMatchObject({ journalPath: null, startDate: '2026-09-30', journalMissing: false });
     expect(now(manual)).toMatchObject({ remarkCount: 0, facts: { design: 0, content: 0, repeats: 0, cycles: 1 }, missing: [] });
     expect(now(manual).score?.iikd).toBe(100);
 
@@ -59,33 +63,54 @@ describe('связывание перечня с журналами', () => {
     expect(result.issues).toEqual([]);
   });
 
-  it('документ без найденного журнала остаётся без оценки', () => {
+  it('документ без найденного журнала не рассчитывается', () => {
     const result = evaluate([
       { path: 'Перечень.xlsx', sheets: [registrySheet([{ document: 'А', cycles: 1, journalFile: 'нет_такого.xlsx' }, { document: 'Б', cycles: 1 }])] },
     ]);
-    expect(result.documents.map((d) => [d.name, d.evaluable, now(d).score, now(d).missing])).toEqual([
-      ['А', false, null, ['journal']],
-      ['Б', false, null, ['journal']],
+    expect(result.documents.map((d) => [d.name, d.journalMissing, now(d).score, now(d).missing])).toEqual([
+      ['А', true, null, ['journal']],
+      ['Б', true, null, ['journal']],
     ]);
     expect(result.issues.map((i) => i.level)).toEqual(['error', 'warning']);
   });
 
-  it('без числа циклов считает три показателя и помечает документ', () => {
+  it('журнал с принятыми замечаниями без категории не рассчитывается', () => {
     const result = evaluate([
-      { path: 'Перечень.xlsx', sheets: [registrySheet([{ document: 'ТЗ', journalFile: 'ЖУЗ' }])] },
-      { path: 'ЖУЗ.xlsx', sheets: [journalSheet(content(10))] },
+      { path: 'Перечень.xlsx', sheets: [registrySheet([{ document: 'ТЗ', cycles: 1, journalFile: 'ЖУЗ' }])] },
+      { path: 'ЖУЗ.xlsx', sheets: [journalSheet([{}, { category: null }, { category: null }])] },
     ]);
-    const state = now(result.documents[0]!);
-    expect(state).toMatchObject({ facts: { content: 10, cycles: null }, missing: ['cycles'] });
-    expect(state.score?.iikd).toBe(96.5);
+    const doc = result.documents[0]!;
+    expect(doc.uncategorizedRows).toEqual([4, 5]);
+    expect(now(doc)).toMatchObject({ remarkCount: 3, facts: null, score: null, missing: ['categories'] });
+    expect(result.issues).toEqual([expect.objectContaining({ level: 'error', file: 'ЖУЗ.xlsx' })]);
   });
 
-  it('журнал без перечня оценивается по трём показателям', () => {
+  it('без числа циклов в перечне циклы оцениваются по журналу', () => {
+    const result = evaluate([
+      { path: 'Перечень.xlsx', sheets: [registrySheet([{ document: 'ТЗ', journalFile: 'ЖУЗ' }])] },
+      {
+        path: 'ЖУЗ.xlsx',
+        sheets: [journalSheet([
+          ...content(6, { date: '10.03.2026', fileVersion: 'v1' }),
+          ...content(2, { date: '20.04.2026', fileVersion: 'v2' }),
+          ...content(2, { date: '25.05.2026', fileVersion: 'v3' }),
+          ...content(2, { date: '30.06.2026', fileVersion: 'v4' }),
+        ])],
+      },
+    ]);
+    const state = now(result.documents[0]!);
+    expect(state).toMatchObject({ cyclesSource: 'journal', facts: { content: 12, cycles: 4 }, missing: [] });
+    // Содержание: 4 сверх нормы → 80; циклы: 1 сверх нормы → 85.
+    expect(state.score?.iikd).toBe(90);
+    expect(stateAt(result.documents[0]!, '2026-04-30', cfg)!.facts!.cycles).toBe(2);
+  });
+
+  it('журнал без перечня рассчитывается полностью, циклы — по журналу', () => {
     const result = evaluate([{ path: 'ЖУЗ_Отчет.xlsx', sheets: [journalSheet([{ date: '02.10.2026' }, { date: '29.07.2026', project: null }])] }]);
     expect(result.documents).toHaveLength(1);
     const doc = result.documents[0]!;
-    expect(doc).toMatchObject({ project: 'Проект Альфа', name: 'Техническое задание', startDate: '2026-07-29', passports: [] });
-    expect(now(doc)).toMatchObject({ manager: '', status: '', missing: ['registry', 'cycles'] });
+    expect(doc).toMatchObject({ project: 'Проект Альфа', name: 'Техническое задание', startDate: '2026-07-29', passports: [], manager: '', managerSource: null });
+    expect(now(doc)).toMatchObject({ manager: '', status: '', cyclesSource: 'journal', facts: { cycles: 1 }, missing: [] });
   });
 
   it('пустой бланк ЖУЗ и посторонние книги пропускаются', () => {
@@ -97,19 +122,14 @@ describe('связывание перечня с журналами', () => {
     expect(result.files.map((f) => f.kind)).toEqual(['skipped', 'skipped']);
   });
 
-  it('внутренняя и внешняя экспертиза с отдельными журналами — два документа', () => {
+  it('отметки внутреннего и внешнего согласования не делят документ на два', () => {
     const result = evaluate([
       {
         path: 'Перечень.xlsx',
-        sheets: [registrySheet([
-          { document: 'ТЗ', internal: 'да', external: 'нет', cycles: 1, journalFile: 'ЖУЗ_внутр' },
-          { document: 'ТЗ', internal: 'нет', external: 'да', cycles: 2, journalFile: 'ЖУЗ_внеш' },
-        ])],
+        sheets: [registrySheet([{ document: 'ТЗ', internal: 'да', external: 'да', cycles: 1, journalFile: 'без замечаний' }])],
       },
-      { path: 'ЖУЗ_внутр.xlsx', sheets: [journalSheet(content(2, { document: 'ТЗ (внутренняя экспертиза)' }))] },
-      { path: 'ЖУЗ_внеш.xlsx', sheets: [journalSheet(content(20, { document: 'ТЗ (внешняя экспертиза)' }))] },
     ]);
-    expect(result.documents.map((d) => [now(d).expertise, now(d).score?.iikd]).sort()).toEqual([['external', 79], ['internal', 100]]);
+    expect(result.documents).toHaveLength(1);
     expect(result.issues).toEqual([]);
   });
 
@@ -226,5 +246,42 @@ describe('несколько перечней за разное время', () 
     ]);
     expect(undated.documents[0]).toMatchObject({ startDate: '2026-07-20' });
     expect(undated.issues).toEqual([expect.objectContaining({ level: 'warning', file: 'Перечень.xlsx' })]);
+  });
+});
+
+describe('назначения РП в папке', () => {
+  const managersSheet = (rows: string[][]) => ({ name: 'РП по проектам', rows });
+
+  it('файл «Проект — РП» распознаётся и не мешает журналам и перечням', () => {
+    const result = evaluate([
+      { path: 'РП по проектам.xlsx', sheets: [managersSheet([['Проект', 'РП'], ['Проект Альфа', 'Петров П.'], [' проект бета ', 'Сидорова А.'], ['Гамма', '']])] },
+      { path: 'ЖУЗ.xlsx', sheets: [journalSheet(content(2))] },
+    ]);
+    expect([...result.managers.entries()]).toEqual([
+      ['проект альфа', { project: 'Проект Альфа', manager: 'Петров П.' }],
+      ['проект бета', { project: 'проект бета', manager: 'Сидорова А.' }],
+    ]);
+    expect(result.managersPath).toBe('РП по проектам.xlsx');
+    expect(result.files.map((f) => [f.kind, f.note])).toEqual([
+      ['journal', 'ЖУЗ: замечаний 2; в перечне документов не указан'],
+      ['managers', 'Назначения РП: проектов 2'],
+    ]);
+    // Сам документ РП не получает: назначение подставляется в интерфейсе.
+    expect(result.documents[0]!.manager).toBe('');
+  });
+
+  it('при нескольких файлах действует более поздний', () => {
+    const result = evaluate([
+      { path: 'a.xlsx', modified: 2, sheets: [managersSheet([['Проект', 'РП'], ['Альфа', 'Новый']])] },
+      { path: 'b.xlsx', modified: 1, sheets: [managersSheet([['Проект', 'РП'], ['Альфа', 'Старый'], ['Бета', 'Сидорова А.']])] },
+    ]);
+    expect([...result.managers.values()].map((a) => a.manager)).toEqual(['Новый', 'Сидорова А.']);
+    expect(result.issues).toEqual([expect.objectContaining({ level: 'warning', file: 'a.xlsx' })]);
+  });
+
+  it('сохранённые назначения читаются обратно', () => {
+    const assignments = new Map([['бета', { project: 'Бета', manager: 'Сидорова А.' }], ['альфа', { project: 'Альфа', manager: ' Петров П. ' }]]);
+    const result = evaluate([{ path: 'РП.xlsx', sheets: [managersSheet(managersRows(assignments))] }]);
+    expect([...result.managers.values()]).toEqual([{ project: 'Альфа', manager: 'Петров П.' }, { project: 'Бета', manager: 'Сидорова А.' }]);
   });
 });

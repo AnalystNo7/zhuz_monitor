@@ -22,6 +22,7 @@ export interface RemarkInput {
   text?: string;
   category?: string | null;
   status?: string | null;
+  fileVersion?: string | null;
 }
 
 export function remarkRow(r: RemarkInput): Cell[] {
@@ -40,7 +41,7 @@ export function remarkRow(r: RemarkInput): Cell[] {
     r.category === undefined ? 'Уточнение / корректировка информации' : r.category,
     r.status === undefined ? 'Принято' : r.status,
     'Исправлено',
-    'ТЗ v1.1',
+    r.fileVersion === undefined ? 'ТЗ v1.1' : r.fileVersion,
   ];
 }
 

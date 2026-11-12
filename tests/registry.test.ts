@@ -21,7 +21,7 @@ describe('разбор перечня документов (расширенны
     expect(result.rows).toHaveLength(2);
     expect(result.rows[0]).toMatchObject({
       row: 4, project: 'Проект Альфа', manager: 'Петров П.', document: 'Техническое задание', status: 'Согласован',
-      internal: false, external: true, expertise: 'external', cycles: 2, pages: 35, journalFile: 'ЖУЗ_ТЗ.xlsx',
+      internal: false, external: true, cycles: 2, pages: 35, journalFile: 'ЖУЗ_ТЗ.xlsx',
     });
     expect(result.rows[1]).toMatchObject({ cycles: 1, pages: null });
     expect(result.issues).toEqual([]);
@@ -44,18 +44,16 @@ describe('разбор перечня документов (расширенны
     expect(registry(sheet).asOf).toBe('2026-09-08');
   });
 
-  it('определяет вид экспертизы по отметкам согласования', () => {
+  it('отметки внутреннего и внешнего согласования читаются как есть', () => {
     const result = registry(
       registrySheet([
         { document: 'А', internal: 'да', external: 'нет', journalFile: 'а' },
-        { document: 'Б', internal: 'Нет', external: 'Да', journalFile: 'б' },
+        { document: 'Б', internal: 'Да', external: 'Да', journalFile: 'б' },
         { document: 'В', internal: null, external: null, journalFile: 'в' },
-        { document: 'Г', internal: 'да', external: 'да', journalFile: 'г' },
       ]),
     );
-    expect(result.rows.map((r) => r.expertise)).toEqual(['internal', 'external', null, null]);
-    // Обе отметки сразу — ошибка заполнения: на каждую экспертизу нужна своя строка.
-    expect(result.issues).toEqual([expect.objectContaining({ level: 'warning', row: 7 })]);
+    expect(result.rows.map((r) => [r.internal, r.external])).toEqual([[true, false], [true, true], [null, null]]);
+    expect(result.issues).toEqual([]);
   });
 
   it('предупреждает о нечисловом количестве циклов', () => {

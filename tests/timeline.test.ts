@@ -114,7 +114,7 @@ describe('сводные показатели', () => {
   const states = statesAt(documents, null, cfg);
 
   it('общая сводка', () => {
-    expect(summarize(states)).toEqual({ total: 3, scored: 3, incomplete: 0, average: 86.58, zones: { green: 2, yellow: 0, red: 1 } });
+    expect(summarize(states)).toEqual({ total: 3, scored: 3, average: 86.58, zones: { green: 2, yellow: 0, red: 1 } });
     expect(c).toBeDefined();
   });
 
@@ -130,6 +130,6 @@ describe('сводные показатели', () => {
     const { documents: docs } = evaluate([
       { path: 'Перечень.xlsx', sheets: [registrySheet([{ document: 'Г', cycles: 1, journalFile: 'потерян' }])] },
     ]);
-    expect(summarize(statesAt(docs, null, cfg))).toMatchObject({ total: 1, scored: 0, average: null, incomplete: 1 });
+    expect(summarize(statesAt(docs, null, cfg))).toMatchObject({ total: 1, scored: 0, average: null });
   });
 });

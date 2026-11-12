@@ -34,27 +34,31 @@ export function stateAt(doc: ProjectDocument, asOf: string | null, cfg: Config):
 
   const passport = passportAt(doc, asOf);
   const remarks = asOf === null ? doc.remarks : doc.remarks.filter((r) => effectiveDate(r, doc) <= asOf);
-  const cycles = passport?.cycles ?? null;
 
   const missing: MissingPart[] = [];
-  if (!passport) missing.push('registry');
-  if (!doc.evaluable) missing.push('journal');
-  if (cycles === null) missing.push('cycles');
+  if (doc.journalMissing) missing.push('journal');
+  if (doc.uncategorizedRows.length > 0) missing.push('categories');
   if (doc.startDate === null) missing.push('date');
+  const blocked = doc.journalMissing || doc.uncategorizedRows.length > 0;
+
+  // Число циклов: из перечня, а без него — по журналу, сколько циклов началось к дате.
+  // Документ, согласованный без замечаний, прошёл один цикл.
+  const registryCycles = passport?.cycles ?? null;
+  const cycles = registryCycles ?? Math.max(1, ...remarks.map((r) => r.cycle));
 
   let facts: DocumentState['facts'] = null;
-  if (doc.evaluable) {
+  if (!blocked) {
     facts = { design: 0, content: 0, repeats: 0, cycles };
     for (const remark of remarks) if (remark.indicator) facts[remark.indicator] += 1;
   }
   return {
     doc,
     asOf,
-    manager: passport?.manager ?? '',
+    manager: doc.manager,
     developer: passport?.developer ?? '',
     status: passport?.status ?? '',
-    expertise: passport?.expertise ?? null,
     remarkCount: remarks.length,
+    cyclesSource: registryCycles === null ? 'journal' : 'registry',
     facts,
     score: facts ? computeScore(facts, cfg, passport?.pages ?? null) : null,
     missing,

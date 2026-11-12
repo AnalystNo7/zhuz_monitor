@@ -34,17 +34,17 @@ export interface Config {
   /** Статусы замечаний, по которым решение ещё не принято: в расчёт не идут. */
   pendingStatuses: string[];
   categories: CategoryConfig[];
-  /**
-   * Показатель для принятого замечания, у которого категория не указана или не распознана.
-   * `null` — такие замечания не учитывать.
-   */
-  uncategorizedIndicator: RemarkIndicator | null;
   /** Одинаковые по тексту замечания одного журнала считать одним: методика считает уникальные замечания. */
   mergeDuplicateRemarks: boolean;
   /** Если у замечания несколько категорий, оно считается один раз — по первому показателю из списка. */
   indicatorPriority: RemarkIndicator[];
   /** Значения колонки «Файл ЖУЗ», означающие согласование без замечаний. */
   noRemarksMarkers: string[];
+  /**
+   * Число циклов согласования по журналу: новый цикл начинается, если после предыдущего
+   * замечания прошло больше этого числа дней и замечания выданы к новой версии файла.
+   */
+  cycleGapDays: number;
 }
 
 /** Константы методики и принятые по проекту решения. */
@@ -60,7 +60,6 @@ export const DEFAULT_CONFIG: Config = {
   acceptedStatuses: ['принято', 'согласовано с комментарием'],
   rejectedStatuses: ['отклонено'],
   pendingStatuses: ['новое', 'в работе', 'на рассмотрении'],
-  uncategorizedIndicator: 'content',
   mergeDuplicateRemarks: true,
   // Порядок важен: категория определяется по первому совпадению.
   categories: [
@@ -123,6 +122,7 @@ export const DEFAULT_CONFIG: Config = {
   ],
   indicatorPriority: ['repeats', 'content', 'design'],
   noRemarksMarkers: ['без замечаний', 'нет замечаний', 'замечаний нет'],
+  cycleGapDays: 7,
 };
 
 export const INDICATOR_IDS: IndicatorId[] = ['design', 'content', 'repeats', 'cycles'];
